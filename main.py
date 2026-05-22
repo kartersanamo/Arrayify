@@ -138,7 +138,8 @@ def normalize_tag_name(row: list[str], prefix_map: dict[str, str]) -> str | None
     if prefix is None:
         return None
 
-    base_name = f"{prefix}_TABLE"
+    normalized_prefix = prefix if prefix.endswith("_TANK") else f"{prefix}_TANK"
+    base_name = f"{normalized_prefix}_TABLE"
     register_match = REGISTER_ARRAY_NAME_RE.match(row[0])
     if register_match:
         return f"{base_name}[{register_match.group(2)}]"
