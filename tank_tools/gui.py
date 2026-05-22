@@ -178,7 +178,7 @@ class TankManagerApp:
         self.log_text = Text(
             log_frame,
             wrap="word",
-            height=12,
+            height=24,
             bg="#0c0c0c",
             fg="#cccccc",
             insertbackground="#cccccc",
@@ -457,10 +457,10 @@ class TankManagerApp:
     @staticmethod
     def _console_font() -> tuple[str, int]:
         if sys.platform == "darwin":
-            return ("Menlo", 11)
+            return ("Menlo", 8)
         if sys.platform.startswith("win"):
-            return ("Consolas", 11)
-        return ("DejaVu Sans Mono", 11)
+            return ("Consolas", 8)
+        return ("DejaVu Sans Mono", 8)
 
     def _configure_console_tags(self) -> None:
         tag_styles = {
