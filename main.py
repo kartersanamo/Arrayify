@@ -15,6 +15,26 @@ FILES_OUTPUT_FORMAT = "csv"
 INPUT_FILE_NAME = "h221Test.csv"
 INPUT_FILE_STEM = Path(INPUT_FILE_NAME).stem
 
+TAG_PREFIX_OVERRIDES: dict[str, str | None] = {
+    "Fuel Oil OverFlow Tank Volume": "FO_OVFL",
+    "Fuel Oil SDT Day Tank Volume": "FO_SDT",
+    "Ballast Anti Roll #1 Tank Volume": "BS_AR1",
+    "Ballast Anti Roll #2 Tank Volume": "BS_AR2",
+    "Ballast #7-C Tank Volume": "BS_7C",
+    "Fuel Oil #6-P Tank Volume": "FO_6P",
+    "Fuel Oil #6-S Tank Volume": "FO_6S",
+    "Ballast AftPeak-P Tank Volume": "BS_APP",
+    "Ballast AftPeak-S Tank Volume": "BS_APS",
+    "Ballast ForePeak Tank Volume": "BS_FP",
+    "Methanol Pump Void #1-S Volume": "ME_1S",
+    "Methanol Pump Void #1-P Volume": "ME_1P",
+    "Methanol Pump Void #2-S Volume": "ME_2S",
+    "Methanol Pump Void #2-P Volume": "ME_2P",
+    "WashWater Tank Volume": "WW",
+    "Ballast AftPeak Void-P Tank Volume": "BS_APPV",
+    "Ballast AftPeak Void-S Tank Volume": "BS_APSV",
+}
+
 def main() -> None:
     options: dict[int, list] = {
         1: [arrayify_points],
@@ -107,7 +127,14 @@ def normalize_tag_name(row: list[str], prefix_map: dict[str, str]) -> str | None
 
     description_match = TANK_DESCRIPTION_RE.match(description)
     base_description = description_match.group(1).strip() if description_match else description
-    prefix = prefix_map.get(canonicalize_tank_description(base_description))
+    override_prefix = TAG_PREFIX_OVERRIDES.get(base_description)
+    if override_prefix is not None:
+        prefix = override_prefix
+    else:
+        canonical_description = canonicalize_tank_description(base_description)
+        if base_description in TAG_PREFIX_OVERRIDES and TAG_PREFIX_OVERRIDES[base_description] is None:
+            return None
+        prefix = prefix_map.get(canonical_description)
     if prefix is None:
         return None
 
@@ -157,14 +184,12 @@ def print_normalize_summary(
             else:
                 print(f"- {group['description']} ({count} rows)")
 
-            for item in sample_rows:
+            for index, item in enumerate(sample_rows):
+                end = "\n" if index == 0 else "...\n\n"
                 if include_tag:
-                    print(f"  - {item['register']} | {item['description']} -> {item['tag']}")
+                    print(f"  - {item['register']} | {item['description']} -> {item['tag']}", end = end)
                 else:
-                    print(f"  - {item['register']} | {item['description']}")
-
-            if count > 2:
-                print("  ...")
+                    print(f"  - {item['register']} | {item['description']}", end = end)
 
     print_grouped_rows("Renamed rows:", matched_rows, include_tag=True)
     print_grouped_rows("Rows without a tag match:", unmatched_rows, include_tag=False)
@@ -219,13 +244,13 @@ def table_key_to_description(table_key: str) -> str | None:
         return "Fuel Oil Day-P Tank Volume"
     
     # Is this correct?
+    #elif table_key == "FO-EMERG.S":
+    #    return "Fuel Oil Dirty Oil Tank Volume"
+    # Is this correct?
+    #elif table_key == "FO_SWG.S":
+    #    return "Fuel Oil SDT Day Tank Volume"
+    
     elif table_key == "FO_OVER.S":
-        return "Fuel Oil Dirty Oil Tank Volume"
-    # Is this correct?
-    elif table_key == "FO_SWG.S":
-        return "Fuel Oil SDT Day Tank Volume"
-    # Is this correct?
-    elif table_key == "FO-EMERG.S":
         return "Fuel Oil OverFlow Tank Volume"
 
     lm_match = re.match(r"^LM(\d)\.(P|S)$", table_key)
