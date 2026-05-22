@@ -28,7 +28,9 @@ from tank_tools.io import CsvRepository
 from tank_tools.rules import TankRules
 from tank_tools.services import ArrayifyService, TagNormalizationService, TankSoundingService
 
-APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "arrayify_icon.png"
+from tank_tools.runtime import resource_path
+
+APP_ICON_PATH = resource_path("assets", "arrayify_icon.png")
 
 
 @dataclass

@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tank_tools.runtime import is_frozen, project_root
+
 APP_TITLE = "Arrayify"
 APP_USER_MODEL_ID = "eco.edisonchouest.arrayify"
 
@@ -20,16 +22,18 @@ def configure_app_identity(name: str = APP_TITLE) -> None:
 
 
 def macos_app_bundle_path() -> Path | None:
-    if sys.platform != "darwin":
+    if sys.platform != "darwin" or is_frozen():
         return None
 
-    project_root = Path(__file__).resolve().parent.parent
-    bundle = project_root / "Arrayify.app"
-    return bundle if bundle.is_dir() else None
+    bundle = project_root() / "Arrayify.app"
+    launcher = bundle / "Contents" / "MacOS" / "arrayify"
+    if bundle.is_dir() and launcher.is_file():
+        return bundle
+    return None
 
 
 def relaunch_via_macos_app_bundle(argv: list[str]) -> bool:
-    if sys.platform != "darwin" or os.environ.get("ARRAYIFY_IN_APP") == "1":
+    if is_frozen() or sys.platform != "darwin" or os.environ.get("ARRAYIFY_IN_APP") == "1":
         return False
 
     bundle = macos_app_bundle_path()

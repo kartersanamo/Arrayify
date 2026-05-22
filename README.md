@@ -51,36 +51,97 @@ If the Python you launched does not include Tkinter, the app automatically relau
 
 ## Package With PyInstaller
 
-Install PyInstaller in the environment you will build from:
+PyInstaller builds for the OS you run it on. Build the Windows `.exe` on Windows, and build the macOS `.app` on a Mac.
+
+Install PyInstaller in the same environment you use to build:
 
 ```bash
+# Windows / Linux (venv recommended)
 pip install pyinstaller
+
+# macOS (Homebrew is also fine)
+pip install pyinstaller
+# or: brew install pyinstaller
 ```
 
-PyInstaller builds on the current operating system, so create the `.exe` on Windows and build the macOS/Linux binary on macOS/Linux.
-
-For a GUI build:
+Use a Python build that includes **Tkinter** (required for the GUI). On macOS, the Homebrew `python@3.14` formula often needs the Tk extra:
 
 ```bash
-pyinstaller --onefile --windowed --name ArrayifySoundTanks main.py
+brew install python@3.14 python-tk@3.14
+python3 -c "import tkinter"
 ```
 
-For a CLI build:
+If that import fails, the packaged app will not be able to open the GUI.
+
+### GUI build (all platforms)
+
+Base command:
 
 ```bash
-pyinstaller --onefile --console --name ArrayifySoundTanksCLI main.py
+pyinstaller --onefile --windowed --name Arrayify main.py
 ```
 
-If you want the `Files` folder bundled with the executable, add it like this:
+- `--windowed` hides the console window and builds a GUI-first app (no terminal).
+- `--onefile` bundles into a single executable (on macOS this still produces a `.app` wrapper in `dist/`).
+
+Packaged builds **open the GUI automatically** when you double-click the app. You do not need `--gui`. Use `--cli` only if you built a console binary and want the text menu.
+
+### macOS GUI build
+
+From the project root on a Mac:
+
+```bash
+cd /path/to/ArrayifyAndSoundTanks
+
+# Build a windowed .app with icon and bundled data
+pyinstaller --onefile --windowed --name Arrayify \
+  --icon assets/arrayify.icns \
+  --add-data "assets/arrayify_icon.png:assets" \
+  main.py
+
+# Build a console .app with icon and bundled data
+pyinstaller --onefile --console --name Arrayify \
+  --icon assets/arrayify.icns \
+  --add-data "assets/arrayify_icon.png:assets" \
+  main.py
+```
+
+After the build finishes, open the app from Finder or Terminal:
+
+```bash
+open dist/Arrayify.app
+```
+
+**macOS notes:**
+
+- Output appears under `dist/Arrayify.app` (Finder app bundle).
+- `--icon assets/arrayify.icns` sets the Dock / Finder icon (generate `assets/arrayify.icns` from `assets/arrayify_icon.png` with `iconutil` if needed).
+- If macOS blocks the app (“unidentified developer”), right-click the app → **Open**, or sign it with your Apple Developer ID for distribution.
+- The repo also includes `Arrayify.app` for running from source with the correct Dock name; PyInstaller produces a separate distributable in `dist/`.
+
+Optional: rebuild from the checked-in spec (produces `dist/Arrayify.app`):
+
+```bash
+pyinstaller Arrayify.spec
+open dist/Arrayify.app
+```
+
+### CLI build
+
+```bash
+pyinstaller --onefile --console --name ArrayifyCLI main.py
+```
+
+### Bundle the sample `Files` folder (Windows / Linux)
 
 ```bash
 # Windows
-pyinstaller --onefile --windowed --add-data "Files;Files" --name ArrayifySoundTanks main.py
+pyinstaller --onefile --windowed --add-data "Files;Files" --name Arrayify main.py
 
-# macOS and Linux
-pyinstaller --onefile --windowed --add-data "Files:Files" --name ArrayifySoundTanks main.py
+# Linux
+pyinstaller --onefile --windowed --add-data "Files:Files" --name Arrayify main.py
 ```
 
 The GUI build is the best choice for end users. The CLI build is useful for automation and batch runs.
 
-When you package the app, remember that PyInstaller freezes the interpreter you build with. If that build Python has Tkinter, the GUI executable will include it.
+When you package the app, PyInstaller freezes the interpreter you build with. That interpreter must have Tkinter available at build time for the GUI executable to work.

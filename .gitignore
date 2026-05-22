@@ -4,3 +4,6 @@ main.py
 tank_tools/__pycache__/*
 Arrayify.app/*
 tank_tools/services/__pycache__/*
+*.spec
+build/*
+dist/*
