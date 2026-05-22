@@ -345,6 +345,7 @@ class TankManagerApp:
                         sound_folder=sound_folder,
                         input_rows=preview_rows,
                         write_output=False,
+                        cli_style=False,
                         event_callback=self._enqueue_event,
                     )
                 elif workflow == "all":
@@ -360,6 +361,7 @@ class TankManagerApp:
                             sound_folder=sound_folder,
                             input_rows=arrayified,
                             write_output=False,
+                            cli_style=False,
                             event_callback=self._enqueue_event,
                         )
                         if sounded is None:
@@ -369,6 +371,7 @@ class TankManagerApp:
                                 input_rows=sounded,
                                 tag_prefix_input_path=tag_prefix_path,
                                 write_output=False,
+                                cli_style=False,
                                 event_callback=self._enqueue_event,
                                 custom_tag_provider=self._prompt_for_custom_tag,
                             )
@@ -377,6 +380,7 @@ class TankManagerApp:
                         input_rows=preview_rows,
                         tag_prefix_input_path=tag_prefix_path,
                         write_output=False,
+                        cli_style=False,
                         event_callback=self._enqueue_event,
                         custom_tag_provider=self._prompt_for_custom_tag,
                     )
@@ -539,6 +543,8 @@ class TankManagerApp:
             )
         ) or ("->" in line and "|" in line):
             return "success"
+        if line.startswith("  ") and "|" in line:
+            return "detail"
         if line.startswith("- ") or line.startswith("  - "):
             return "detail"
         if any(

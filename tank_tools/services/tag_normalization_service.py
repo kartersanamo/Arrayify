@@ -149,7 +149,10 @@ class TagNormalizationService:
     def _print_normalize_summary(
         matched_rows: list[NormalizeMatch],
         unmatched_rows: list[NormalizeMiss],
+        cli_style: bool = True,
     ) -> None:
+        bullet = bullet_prefix(cli_style)
+        sub_bullet = sub_bullet_prefix(cli_style)
         print("Normalize summary:")
 
         def group_rows(rows: list[NormalizeMatch | NormalizeMiss]) -> list[dict[str, object]]:
@@ -177,16 +180,16 @@ class TagNormalizationService:
                 sample_rows = group["rows"][:2]
                 count = len(group["rows"])
                 if include_tag:
-                    print(f"- {group['description']} -> {group['tag']} ({count} rows)")
+                    print(f"{bullet}{group['description']} -> {group['tag']} ({count} rows)")
                 else:
-                    print(f"- {group['description']} ({count} rows)")
+                    print(f"{bullet}{group['description']} ({count} rows)")
 
                 for index, item in enumerate(sample_rows):
                     end = "\n" if index == 0 else "...\n\n"
                     if include_tag:
-                        print(f"  - {item.register} | {item.description} -> {item.tag}", end=end)
+                        print(f"{sub_bullet}{item.register} | {item.description} -> {item.tag}", end=end)
                     else:
-                        print(f"  - {item.register} | {item.description}", end=end)
+                        print(f"{sub_bullet}{item.register} | {item.description}", end=end)
 
         print_grouped_rows("Renamed rows:", matched_rows, include_tag=True)
         print_grouped_rows("Rows without a tag match:", unmatched_rows, include_tag=False)
