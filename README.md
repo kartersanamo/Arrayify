@@ -1,15 +1,28 @@
 # Arrayify and Sound Tanks
 
-Arrayify is a program written for ECO to automate conversions between spreadsheets.
+This project converts tank register spreadsheets into array-based rows, applies soundings from `.docx` tables, and normalizes register names to tank tag names.
 
-It was built to refactor tank sounding variables so their initial addresses are stored as arrays instead of individual addresses. It also supports re-sounding the variables from `.docx` files and normalizing the names to tags.
+## Structure
 
-## Features
-
-- Arrayify tank variables into array-based rows
-- Sound variables from `.docx` tank tables
-- Normalize register names to tag names
+- `main.py` is a thin CLI entrypoint.
+- `tank_tools/config.py` holds project paths.
+- `tank_tools/io.py` handles CSV I/O.
+- `tank_tools/rules.py` contains naming and sounding rules.
+- `tank_tools/services.py` contains the workflow classes.
+- `tank_tools/cli.py` wires the services together.
 
 ## Usage
 
-Run `main.py` and choose the workflow you want from the menu.
+Install dependencies and run the entrypoint:
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+Choose one workflow from the menu:
+
+- Array-ify points
+- Sound tanks
+- Normalize tag names
+- Run all three in sequence
