@@ -22,6 +22,10 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 from tank_tools.cli import TankCli
 
@@ -32,18 +36,54 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.gui:
-        try:
-            import tkinter as tk
-            from tank_tools.gui import TankManagerApp
-        except ModuleNotFoundError as exc:
-            print(f"GUI mode is unavailable in this Python environment: {exc}")
+        gui_executable = find_tkinter_python_executable()
+        if gui_executable is None:
+            print("GUI mode is unavailable because no Python interpreter with Tkinter was found.")
             return
+
+        if Path(gui_executable).resolve() != Path(sys.executable).resolve():
+            os.execv(gui_executable, [gui_executable, str(Path(__file__).resolve()), *sys.argv[1:]])
+
+        import tkinter as tk
+        from tank_tools.gui import TankManagerApp
 
         root = tk.Tk()
         TankManagerApp(root).run()
         return
 
     TankCli().run()
+
+
+def find_tkinter_python_executable() -> str | None:
+    candidates = [
+        sys.executable,
+        "/usr/bin/python3",
+        "/opt/homebrew/bin/python3",
+        "/opt/homebrew/bin/python3.14",
+    ]
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        if has_tkinter(candidate):
+            return candidate
+
+    return None
+
+
+def has_tkinter(python_executable: str) -> bool:
+    try:
+        completed = subprocess.run(
+            [python_executable, "-c", "import tkinter"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+
+    return completed.returncode == 0
 
 
 if __name__ == "__main__":

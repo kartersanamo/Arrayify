@@ -2,6 +2,8 @@
 
 This project converts tank register spreadsheets into array-based rows, applies soundings from `.docx` tables, and normalizes register names to tank tag names.
 
+The runtime code only uses the Python standard library. The GUI will automatically relaunch itself with a Tk-capable Python interpreter if the current one was built without Tkinter.
+
 ## Structure
 
 - `main.py` is the entrypoint and supports both CLI and GUI launch.
@@ -19,6 +21,8 @@ Install the dependencies first:
 ```bash
 pip install -r requirements.txt
 ```
+
+There are no mandatory third-party runtime packages right now, so this step is mostly useful if you later add packaging or build tooling.
 
 Then run the CLI menu:
 
@@ -42,6 +46,8 @@ python main.py --gui
 ```
 
 In the GUI, pick the input CSV inside the app, choose the DOCX folder if you need sounding, watch the live log and row preview update, and export the current result whenever you want.
+
+If the Python you launched does not include Tkinter, the app automatically relaunches with another local Python that does.
 
 ## Package With PyInstaller
 
@@ -76,3 +82,5 @@ pyinstaller --onefile --windowed --add-data "Files:Files" --name ArrayifySoundTa
 ```
 
 The GUI build is the best choice for end users. The CLI build is useful for automation and batch runs.
+
+When you package the app, remember that PyInstaller freezes the interpreter you build with. If that build Python has Tkinter, the GUI executable will include it.

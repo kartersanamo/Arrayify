@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable
 
 from tank_tools.config import ProjectConfig
+from tank_tools.docx_reader import read_docx_tables
 from tank_tools.io import CsvRepository
 from tank_tools.models import (
     ArrayifySummaryRow,
@@ -247,11 +248,8 @@ class TankSoundingService:
         explicit_matches: dict[str, dict[str, object]] = {}
         unmatched_doc_tables: list[SoundDocumentMiss] = []
 
-        from docx import Document
-
         for doc_path in sorted(sound_folder.glob("*.docx")) + sorted(sound_folder.glob("*.DOCX")):
-            document = Document(doc_path)
-            for table in document.tables:
+            for table in read_docx_tables(doc_path):
                 table_title = table.cell(0, 0).text.strip().replace("\n", " ")
                 table_key = self._rules.extract_table_key(table_title)
                 if not table_key:
