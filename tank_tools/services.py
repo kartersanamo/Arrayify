@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from docx import Document
+from typing import Callable
 
 from tank_tools.config import ProjectConfig
 from tank_tools.io import CsvRepository
@@ -26,7 +25,7 @@ class ArrayifyService:
         self,
         input_path: Path | None = None,
         output_path: Path | None = None,
-        event_callback: callable | None = None,
+        event_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> list[list[str]] | None:
         print("Array-ify-ing...")
 
@@ -203,25 +202,35 @@ class TankSoundingService:
         self._csv_repository = csv_repository
         self._rules = rules
 
-    def sound_tanks(self) -> None:
+    def sound_tanks(
+        self,
+        sound_folder: Path | None = None,
+        input_path: Path | None = None,
+        output_path: Path | None = None,
+        event_callback: Callable[[dict[str, object]], None] | None = None,
+    ) -> list[list[str]] | None:
         print("Sounding tanks....")
 
-        folder_input = input("Enter the folder path containing DOCX soundings [Files/NewSounds]: ").strip()
-        sound_folder = Path(folder_input or self._config.new_sounds_dir)
+        if sound_folder is None:
+            folder_input = input("Enter the folder path containing DOCX soundings [Files/NewSounds]: ").strip()
+            sound_folder = Path(folder_input or self._config.new_sounds_dir)
 
         if not sound_folder.is_dir():
             print(f"Folder not found: {sound_folder}")
             return
 
-        if not self._config.arrayified_csv_path.is_file():
-            print(f"Template file not found: {self._config.arrayified_csv_path}")
+        input_path = input_path or self._config.arrayified_csv_path
+        output_path = output_path or self._config.sounded_csv_path
+
+        if not input_path.is_file():
+            print(f"Template file not found: {input_path}")
             return
 
-        if self._config.sounded_csv_path.exists():
-            print(f"Conflicting output file path: {self._config.sounded_csv_path}")
+        if output_path.exists():
+            print(f"Conflicting output file path: {output_path}")
             return
 
-        rows = self._csv_repository.read_rows(self._config.arrayified_csv_path)
+        rows = self._csv_repository.read_rows(input_path)
         if not rows:
             print("Template file is empty. You must arrayify the input file first.")
             return
@@ -237,6 +246,8 @@ class TankSoundingService:
 
         explicit_matches: dict[str, dict[str, object]] = {}
         unmatched_doc_tables: list[SoundDocumentMiss] = []
+
+        from docx import Document
 
         for doc_path in sorted(sound_folder.glob("*.docx")) + sorted(sound_folder.glob("*.DOCX")):
             document = Document(doc_path)
@@ -274,6 +285,16 @@ class TankSoundingService:
             self._set_block_initial_values(rows, row_index, metadata["volumes"])
             matched_metadata_by_description[description] = metadata
 
+            if event_callback is not None:
+                event_callback(
+                    {
+                        "type": "preview",
+                        "workflow": "sound",
+                        "description": description,
+                        "rows": rows.copy(),
+                    }
+                )
+
         matched_rows: list[SoundMatch] = []
         for _, description in base_rows:
             metadata = matched_metadata_by_description.get(description)
@@ -299,8 +320,13 @@ class TankSoundingService:
         unmatched_csv_rows = [description for _, description in base_rows if description not in matched_metadata_by_description]
 
         self._print_sound_mapping_report(matched_rows, unmatched_doc_tables, unmatched_csv_rows)
-        self._csv_repository.write_rows(self._config.sounded_csv_path, rows)
-        print(f"Wrote sounded CSV to {self._config.sounded_csv_path}")
+        self._csv_repository.write_rows(output_path, rows)
+        print(f"Wrote sounded CSV to {output_path}")
+
+        if event_callback is not None:
+            event_callback({"type": "completed", "workflow": "sound", "rows": rows.copy()})
+
+        return rows
 
     def _set_block_initial_values(self, rows: list[list[str]], start_index: int, values: list[str]) -> None:
         base_row = rows[start_index]
@@ -379,16 +405,23 @@ class TagNormalizationService:
         self._csv_repository = csv_repository
         self._rules = rules
 
-    def normalize_tags(self) -> None:
+    def normalize_tags(
+        self,
+        input_path: Path | None = None,
+        output_path: Path | None = None,
+        event_callback: Callable[[dict[str, object]], None] | None = None,
+        custom_tag_provider: Callable[[str], str | None] | None = None,
+    ) -> list[list[str]] | None:
         print("Normalizing tags....")
 
-        source_path = self._find_source_path()
+        source_path = input_path or self._find_source_path()
         if source_path is None:
             print("No arrayified or sounded CSV found. Run arrayify first.")
             return
 
-        if self._config.normalized_csv_path.exists():
-            print(f"Conflicting output file path: {self._config.normalized_csv_path}")
+        output_path = output_path or self._config.normalized_csv_path
+        if output_path.exists():
+            print(f"Conflicting output file path: {output_path}")
             return
 
         rows = self._csv_repository.read_rows(source_path)
@@ -422,9 +455,12 @@ class TagNormalizationService:
                     base_description = self._rules.extract_base_description(description)
                     if base_description not in prompted_descriptions:
                         prompted_descriptions.add(base_description)
-                        custom_input = input(
-                            f"No tag match for '{base_description}'. Enter a custom tag prefix, or press Enter to leave it unchanged: "
-                        ).strip()
+                        if custom_tag_provider is None:
+                            custom_input = input(
+                                f"No tag match for '{base_description}'. Enter a custom tag prefix, or press Enter to leave it unchanged: "
+                            ).strip()
+                        else:
+                            custom_input = (custom_tag_provider(base_description) or "").strip()
 
                         if custom_input:
                             custom_tag_name = self._rules.format_custom_tag_name(custom_input)
@@ -443,6 +479,18 @@ class TagNormalizationService:
                 if len(row) > 15:
                     row[15] = ""
                 renamed_rows += 1
+
+                if event_callback is not None:
+                    event_callback(
+                        {
+                            "type": "preview",
+                            "workflow": "normalize",
+                            "register": source_register,
+                            "description": description,
+                            "tag": normalized_name,
+                            "rows": rows.copy(),
+                        }
+                    )
                 continue
 
             normalized_name = self._rules.normalize_tag_name(row, prefix_map, custom_tag_map)
@@ -455,9 +503,14 @@ class TagNormalizationService:
             renamed_rows += 1
 
         self._print_normalize_summary(matched_rows, unmatched_rows)
-        self._csv_repository.write_rows(self._config.normalized_csv_path, rows)
+        self._csv_repository.write_rows(output_path, rows)
         print(f"Normalized {renamed_rows} row names.")
-        print(f"Wrote normalized CSV to {self._config.normalized_csv_path}")
+        print(f"Wrote normalized CSV to {output_path}")
+
+        if event_callback is not None:
+            event_callback({"type": "completed", "workflow": "normalize", "rows": rows.copy()})
+
+        return rows
 
     def _find_source_path(self) -> Path | None:
         candidates = [self._config.sounded_csv_path, self._config.arrayified_csv_path]
