@@ -13,21 +13,21 @@ from contextlib import redirect_stderr, redirect_stdout
 
 try:
     import tkinter as tk
-    from tkinter import END, LEFT, RIGHT, BOTH, X, Y, filedialog, messagebox, simpledialog, StringVar, Text, Tk
+    from tkinter import END, HORIZONTAL, LEFT, RIGHT, BOTH, VERTICAL, X, Y, filedialog, messagebox, simpledialog, StringVar, Text, Tk
     from tkinter import ttk
 except ModuleNotFoundError:  # pragma: no cover - handled at runtime in environments without Tk
     tk = None
-    END = LEFT = RIGHT = BOTH = X = Y = None
+    END = HORIZONTAL = LEFT = RIGHT = BOTH = VERTICAL = X = Y = None
     filedialog = messagebox = simpledialog = None
     StringVar = Text = Tk = object
     ttk = None
 
+from tank_tools.app_identity import APP_TITLE, apply_tk_window_identity, configure_app_identity
 from tank_tools.config import ProjectConfig
 from tank_tools.io import CsvRepository
 from tank_tools.rules import TankRules
 from tank_tools.services import ArrayifyService, TagNormalizationService, TankSoundingService
 
-APP_TITLE = "Arrayify"
 APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "arrayify_icon.png"
 
 
@@ -65,10 +65,13 @@ class TankManagerApp:
             raise RuntimeError("Tkinter is not available in this Python environment.")
 
         self._root = root
+        configure_app_identity(APP_TITLE)
         self._root.title(APP_TITLE)
         self._root.geometry("1200x780")
         self._icon_image: tk.PhotoImage | None = None
         self._apply_window_icon()
+        apply_tk_window_identity(self._root, APP_TITLE)
+        self._root.after(250, lambda: apply_tk_window_identity(self._root, APP_TITLE))
 
         self._config = ProjectConfig.default()
         self._csv_repository = CsvRepository()
@@ -117,15 +120,28 @@ class TankManagerApp:
         header = ttk.Label(outer, text="Tank Workflow Manager", font=("Helvetica", 18, "bold"))
         header.pack(anchor="w", pady=(0, 6))
 
-        controls = ttk.Frame(outer)
-        controls.pack(fill=X, pady=(0, 10))
-
-        input_box = ttk.LabelFrame(controls, text="Input CSV (required first)")
-        input_box.pack(side=LEFT, fill=X, expand=True, padx=(0, 10))
+        input_box = ttk.LabelFrame(outer, text="Input CSV (required first)")
+        input_box.pack(fill=X, pady=(0, 10))
         self._add_path_row(input_box, "Input CSV", self.input_var, self._choose_input_file)
 
-        workflow_box = ttk.LabelFrame(controls, text="Workflow")
-        workflow_box.pack(side=LEFT, fill=Y, padx=(0, 10))
+        action_bar = ttk.Frame(outer)
+        action_bar.pack(fill=X, pady=(0, 10))
+
+        button_cluster = ttk.Frame(action_bar)
+        button_cluster.pack(side=LEFT)
+
+        self.run_button = ttk.Button(button_cluster, text="Run Workflow", command=self._start_workflow, state="disabled")
+        self.run_button.pack(side=LEFT, padx=(0, 8))
+
+        self.export_button = ttk.Button(button_cluster, text="Export", command=self._export_current_preview, state="disabled")
+        self.export_button.pack(side=LEFT, padx=(0, 8))
+
+        ttk.Button(button_cluster, text="Clear Logs", command=self._clear_logs).pack(side=LEFT)
+
+        workflow_box = ttk.LabelFrame(action_bar, text="Workflow")
+        workflow_box.pack(side=RIGHT, fill=Y)
+        workflow_row = ttk.Frame(workflow_box)
+        workflow_row.pack(padx=8, pady=6)
         self._workflow_radios: list[ttk.Radiobutton] = []
         for label, value in (
             ("Normalize", "normalize"),
@@ -134,29 +150,18 @@ class TankManagerApp:
             ("All", "all"),
         ):
             radio = ttk.Radiobutton(
-                workflow_box,
+                workflow_row,
                 text=label,
                 value=value,
                 variable=self.workflow_var,
                 state="disabled",
             )
-            radio.pack(anchor="w", padx=10, pady=2)
+            radio.pack(side=LEFT, padx=(0, 12))
             self._workflow_radios.append(radio)
 
-        self.docx_box = ttk.LabelFrame(controls, text="DOCX Folder (required for Sound)")
+        self.docx_box = ttk.LabelFrame(outer, text="DOCX Folder (required for Sound)")
         self._add_path_row(self.docx_box, "DOCX Folder", self.docx_folder_var, self._choose_docx_folder)
         self.docx_box.pack_forget()
-
-        button_bar = ttk.Frame(outer)
-        button_bar.pack(fill=X, pady=(0, 10))
-
-        self.run_button = ttk.Button(button_bar, text="Run Workflow", command=self._start_workflow, state="disabled")
-        self.run_button.pack(side=LEFT, padx=(0, 8))
-
-        self.export_button = ttk.Button(button_bar, text="Export", command=self._export_current_preview, state="disabled")
-        self.export_button.pack(side=LEFT, padx=(0, 8))
-
-        ttk.Button(button_bar, text="Clear Logs", command=self._clear_logs).pack(side=LEFT)
 
         status_bar = ttk.Label(outer, textvariable=self.status_var)
         status_bar.pack(fill=X, pady=(0, 8))
@@ -173,7 +178,7 @@ class TankManagerApp:
         self.log_text = Text(
             log_frame,
             wrap="word",
-            height=24,
+            height=12,
             bg="#0c0c0c",
             fg="#cccccc",
             insertbackground="#cccccc",
@@ -193,7 +198,7 @@ class TankManagerApp:
         self.log_text.pack(side=LEFT, fill=BOTH, expand=True)
         log_scroll.pack(side=RIGHT, fill=Y)
         self.log_text.configure(state="disabled")
-        self._append_log("Console ready. Load an input CSV or run a workflow to see output.", level="muted")
+        self._append_log("Application started.", level="muted")
 
         preview_columns = ("index", "name", "description", "initial", "ioaddress")
         self.preview_tree = ttk.Treeview(preview_frame, columns=preview_columns, show="headings", height=24)
@@ -273,7 +278,7 @@ class TankManagerApp:
     def _on_workflow_changed(self, *_args: object) -> None:
         workflow = self.workflow_var.get()
         if workflow in {"sound", "all"}:
-            self.docx_box.pack(side=LEFT, fill=Y)
+            self.docx_box.pack(fill=X, pady=(0, 10))
             if self._paths.docx_folder is not None:
                 self._docx_valid = self._validate_docx_folder(self._paths.docx_folder)
         else:

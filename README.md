@@ -10,7 +10,7 @@ The runtime code only uses the Python standard library. The GUI will automatical
 - `tank_tools/config.py` holds project paths.
 - `tank_tools/io.py` handles CSV I/O.
 - `tank_tools/rules.py` contains naming and sounding rules.
-- `tank_tools/services.py` contains the workflow classes.
+- `tank_tools/services/` contains one workflow class per file (`ArrayifyService`, `TankSoundingService`, `TagNormalizationService`).
 - `tank_tools/cli.py` wires the CLI menu.
 - `tank_tools/gui.py` provides the lightweight Tkinter interface.
 

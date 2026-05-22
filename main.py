@@ -37,12 +37,18 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.gui:
+        from tank_tools.app_identity import configure_app_identity, relaunch_via_macos_app_bundle
+
+        configure_app_identity()
+        relaunch_via_macos_app_bundle(sys.argv)
+
         gui_executable = find_tkinter_python_executable()
         if gui_executable is None:
             print("GUI mode is unavailable because no Python interpreter with Tkinter was found.")
             return
 
         if Path(gui_executable).resolve() != Path(sys.executable).resolve():
+            os.environ.setdefault("ARRAYIFY_IN_APP", "1")
             os.execv(gui_executable, [gui_executable, str(Path(__file__).resolve()), *sys.argv[1:]])
 
         import tkinter as tk
