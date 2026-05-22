@@ -372,6 +372,7 @@ class TankManagerApp:
                                 tag_prefix_input_path=tag_prefix_path,
                                 write_output=False,
                                 cli_style=False,
+                                live_preview=False,
                                 event_callback=self._enqueue_event,
                                 custom_tag_provider=self._prompt_for_custom_tag,
                             )
@@ -381,6 +382,7 @@ class TankManagerApp:
                         tag_prefix_input_path=tag_prefix_path,
                         write_output=False,
                         cli_style=False,
+                        live_preview=False,
                         event_callback=self._enqueue_event,
                         custom_tag_provider=self._prompt_for_custom_tag,
                     )
@@ -397,10 +399,22 @@ class TankManagerApp:
         self._event_queue.put(event)
 
     def _prompt_for_custom_tag(self, description: str) -> str | None:
-        response_box: dict[str, object] = {"event": threading.Event(), "value": None}
-        self._event_queue.put({"type": "prompt", "description": description, "box": response_box})
-        response_box["event"].wait()  # type: ignore[union-attr]
-        return response_box["value"]  # type: ignore[return-value]
+        result: dict[str, str | None] = {"value": None}
+        done = threading.Event()
+
+        def show_dialog() -> None:
+            try:
+                result["value"] = simpledialog.askstring(
+                    "Custom tag needed",
+                    f"No tag match for '{description}'. Enter a custom tag prefix, or leave blank to skip:",
+                    parent=self._root,
+                )
+            finally:
+                done.set()
+
+        self._root.after(0, show_dialog)
+        done.wait()
+        return result["value"]
 
     def _process_events(self) -> None:
         try:
@@ -416,7 +430,6 @@ class TankManagerApp:
                     rows = event.get("rows")
                     if isinstance(rows, list):
                         self._latest_rows = rows
-                        self._refresh_preview(rows)
                     description = event.get("description")
                     if description:
                         self.status_var.set(f"Updated: {description}")
@@ -425,8 +438,6 @@ class TankManagerApp:
                     if isinstance(rows, list):
                         self._latest_rows = rows
                         self._refresh_preview(rows)
-                elif event_type == "prompt":
-                    self._handle_prompt(event)
                 elif event_type == "error":
                     error_message = str(event.get("message", "Unknown error"))
                     self._append_log(error_message, level="error")
@@ -437,22 +448,6 @@ class TankManagerApp:
             pass
 
         self._root.after(100, self._process_events)
-
-    def _handle_prompt(self, event: dict[str, object]) -> None:
-        box = event.get("box")
-        description = str(event.get("description", ""))
-        if not isinstance(box, dict):
-            return
-
-        response = simpledialog.askstring(
-            "Custom tag needed",
-            f"No tag match for '{description}'. Enter a custom tag prefix, or leave blank to skip:",
-            parent=self._root,
-        )
-        box["value"] = response
-        prompt_event = box.get("event")
-        if isinstance(prompt_event, threading.Event):
-            prompt_event.set()
 
     @staticmethod
     def _console_font() -> tuple[str, int]:
@@ -582,8 +577,9 @@ class TankManagerApp:
         self.log_text.see(END)
 
     def _refresh_preview(self, rows: list[list[str]]) -> None:
-        for item_id in self.preview_tree.get_children():
-            self.preview_tree.delete(item_id)
+        children = self.preview_tree.get_children()
+        if children:
+            self.preview_tree.delete(*children)
 
         for index, row in enumerate(rows, start=1):
             name = row[0] if len(row) > 0 else ""

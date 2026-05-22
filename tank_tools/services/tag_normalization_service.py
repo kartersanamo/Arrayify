@@ -24,6 +24,7 @@ class TagNormalizationService:
         tag_prefix_input_path: Path | None = None,
         write_output: bool = True,
         cli_style: bool = True,
+        live_preview: bool = True,
         event_callback: Callable[[dict[str, object]], None] | None = None,
         custom_tag_provider: Callable[[str], str | None] | None = None,
     ) -> list[list[str]] | None:
@@ -106,7 +107,7 @@ class TagNormalizationService:
                     row[15] = ""
                 renamed_rows += 1
 
-                if event_callback is not None:
+                if event_callback is not None and live_preview:
                     event_callback(
                         {
                             "type": "preview",
