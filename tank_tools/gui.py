@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import copy
 import queue
+import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from contextlib import redirect_stderr, redirect_stdout
@@ -55,14 +57,6 @@ class _QueueWriter:
 
 
 class TankManagerApp:
-    INSTRUCTIONS = (
-        "You must choose an input CSV first before doing anything else. Once you choose a .csv, "
-        "it automatically populates the Live Row Preview below.\n\n"
-        "Then, after that you can now choose a Workflow option. Once you select a workflow option, "
-        'then the "Run Workflow" button can be pressed. Running a workflow updates the live row preview '
-        "but does not save a file automatically — use Export to save the preview when you are ready."
-    )
-
     def __init__(self, root: Tk) -> None:
         if tk is None or ttk is None:
             raise RuntimeError("Tkinter is not available in this Python environment.")
@@ -104,9 +98,6 @@ class TankManagerApp:
 
         header = ttk.Label(outer, text="Tank Workflow Manager", font=("Helvetica", 18, "bold"))
         header.pack(anchor="w", pady=(0, 6))
-
-        instructions = ttk.Label(outer, text=self.INSTRUCTIONS, wraplength=1150, justify="left")
-        instructions.pack(anchor="w", pady=(0, 10))
 
         controls = ttk.Frame(outer)
         controls.pack(fill=X, pady=(0, 10))
@@ -155,16 +146,36 @@ class TankManagerApp:
         body = ttk.PanedWindow(outer, orient=tk.HORIZONTAL)
         body.pack(fill=BOTH, expand=True)
 
-        log_frame = ttk.Labelframe(body, text="Live Log")
+        log_frame = ttk.Labelframe(body, text="Console")
         preview_frame = ttk.Labelframe(body, text="Live Row Preview")
         body.add(log_frame, weight=1)
         body.add(preview_frame, weight=2)
 
-        self.log_text = Text(log_frame, wrap="word", height=24)
+        console_font = self._console_font()
+        self.log_text = Text(
+            log_frame,
+            wrap="word",
+            height=24,
+            bg="#0c0c0c",
+            fg="#cccccc",
+            insertbackground="#cccccc",
+            selectbackground="#264f78",
+            selectforeground="#ffffff",
+            font=console_font,
+            relief="flat",
+            borderwidth=0,
+            padx=10,
+            pady=10,
+            cursor="arrow",
+        )
+        self._configure_console_tags()
+        self._bind_console_readonly()
         log_scroll = ttk.Scrollbar(log_frame, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scroll.set)
         self.log_text.pack(side=LEFT, fill=BOTH, expand=True)
         log_scroll.pack(side=RIGHT, fill=Y)
+        self.log_text.configure(state="disabled")
+        self._append_log("Console ready. Load an input CSV or run a workflow to see output.", level="muted")
 
         preview_columns = ("index", "name", "description", "initial", "ioaddress")
         self.preview_tree = ttk.Treeview(preview_frame, columns=preview_columns, show="headings", height=24)
@@ -390,7 +401,9 @@ class TankManagerApp:
                 elif event_type == "prompt":
                     self._handle_prompt(event)
                 elif event_type == "error":
-                    messagebox.showerror("Workflow error", str(event.get("message", "Unknown error")))
+                    error_message = str(event.get("message", "Unknown error"))
+                    self._append_log(error_message, level="error")
+                    messagebox.showerror("Workflow error", error_message)
                 elif event_type == "done":
                     self._update_control_states()
         except queue.Empty:
@@ -414,8 +427,129 @@ class TankManagerApp:
         if isinstance(prompt_event, threading.Event):
             prompt_event.set()
 
-    def _append_log(self, message: str) -> None:
-        self.log_text.insert(END, message)
+    @staticmethod
+    def _console_font() -> tuple[str, int]:
+        if sys.platform == "darwin":
+            return ("Menlo", 11)
+        if sys.platform.startswith("win"):
+            return ("Consolas", 11)
+        return ("DejaVu Sans Mono", 11)
+
+    def _configure_console_tags(self) -> None:
+        tag_styles = {
+            "timestamp": {"foreground": "#6a9955"},
+            "info": {"foreground": "#cccccc"},
+            "muted": {"foreground": "#808080"},
+            "header": {"foreground": "#4fc1ff"},
+            "success": {"foreground": "#4ec9b0"},
+            "detail": {"foreground": "#9cdcfe"},
+            "warning": {"foreground": "#dcdcaa"},
+            "error": {"foreground": "#f48771"},
+        }
+        for tag_name, style in tag_styles.items():
+            self.log_text.tag_configure(tag_name, **style)
+
+    def _bind_console_readonly(self) -> None:
+        def block_edit(_event: tk.Event) -> str:
+            return "break"
+
+        def allow_navigation_or_copy(event: tk.Event) -> str | None:
+            key = event.keysym
+            if key in {
+                "Left",
+                "Right",
+                "Up",
+                "Down",
+                "Home",
+                "End",
+                "Prior",
+                "Next",
+                "Shift_L",
+                "Shift_R",
+                "Control_L",
+                "Control_R",
+                "Meta_L",
+                "Meta_R",
+                "Alt_L",
+                "Alt_R",
+                "Command",
+            }:
+                return None
+            if (event.state & 0x4 or event.state & 0x8 or event.state & 0x80) and key.lower() in {"c", "a"}:
+                return None
+            return "break"
+
+        self.log_text.bind("<Key>", allow_navigation_or_copy)
+        for sequence in ("<Button-2>", "<Button-3>", "<<Paste>>", "<<Cut>>"):
+            self.log_text.bind(sequence, block_edit)
+
+    @staticmethod
+    def _log_tag_for_line(line: str) -> str:
+        lowered = line.lower()
+        if any(
+            token in lowered
+            for token in (
+                "not found",
+                "conflicting",
+                "empty",
+                "error",
+                "skipping",
+                "could not",
+                "no arrayified",
+                "no csv row",
+                "duplicate",
+            )
+        ):
+            return "error"
+        if any(token in lowered for token in ("without", "unmatched", "none", "warning")):
+            return "warning"
+        if any(
+            token in lowered
+            for token in (
+                "wrote",
+                "finished",
+                "normalized",
+                "matched tanks:",
+                "loaded input",
+                "ready",
+                "exported to",
+            )
+        ) or ("->" in line and "|" in line):
+            return "success"
+        if line.startswith("- ") or line.startswith("  - "):
+            return "detail"
+        if any(
+            token in lowered
+            for token in (
+                "array-ify",
+                "sounding tanks",
+                "normalizing tags",
+                "summary",
+                "report",
+                "starting",
+                "total tanks",
+                "total points",
+                "renamed rows",
+            )
+        ):
+            return "header"
+        return "info"
+
+    def _append_log(self, message: str, level: str | None = None) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        lines = message.splitlines() or [message]
+
+        self.log_text.configure(state="normal")
+        for line in lines:
+            stripped = line.strip()
+            if not stripped and len(lines) > 1:
+                continue
+
+            tag = level or self._log_tag_for_line(line)
+            self.log_text.insert(END, f"[{timestamp}] ", "timestamp")
+            self.log_text.insert(END, line.rstrip("\n") + "\n", tag)
+
+        self.log_text.configure(state="disabled")
         self.log_text.see(END)
 
     def _refresh_preview(self, rows: list[list[str]]) -> None:
@@ -432,7 +566,10 @@ class TankManagerApp:
         self._update_control_states()
 
     def _clear_logs(self) -> None:
+        self.log_text.configure(state="normal")
         self.log_text.delete("1.0", END)
+        self.log_text.configure(state="disabled")
+        self._append_log("Console cleared.", level="muted")
 
     def _export_current_preview(self) -> None:
         if not self._latest_rows:

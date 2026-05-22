@@ -17,7 +17,7 @@
         Sanamo") listed above and the Company ("Edison Chouest Offshore")
         listed above. No other persons or entities are allowed to use this
         software without permission.
-        
+
 """
 
 from __future__ import annotations
