@@ -27,6 +27,9 @@ from tank_tools.io import CsvRepository
 from tank_tools.rules import TankRules
 from tank_tools.services import ArrayifyService, TagNormalizationService, TankSoundingService
 
+APP_TITLE = "Arrayify"
+APP_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "arrayify_icon.png"
+
 
 @dataclass
 class GuiPaths:
@@ -62,8 +65,10 @@ class TankManagerApp:
             raise RuntimeError("Tkinter is not available in this Python environment.")
 
         self._root = root
-        self._root.title("Arrayify and Sound Tanks")
+        self._root.title(APP_TITLE)
         self._root.geometry("1200x780")
+        self._icon_image: tk.PhotoImage | None = None
+        self._apply_window_icon()
 
         self._config = ProjectConfig.default()
         self._csv_repository = CsvRepository()
@@ -91,6 +96,19 @@ class TankManagerApp:
 
     def run(self) -> None:
         self._root.mainloop()
+
+    def _apply_window_icon(self) -> None:
+        if not APP_ICON_PATH.is_file():
+            return
+
+        try:
+            self._icon_image = tk.PhotoImage(file=str(APP_ICON_PATH))
+            self._root.iconphoto(True, self._icon_image)
+        except tk.TclError:
+            if sys.platform.startswith("win"):
+                ico_path = APP_ICON_PATH.with_suffix(".ico")
+                if ico_path.is_file():
+                    self._root.iconbitmap(str(ico_path))
 
     def _build_layout(self) -> None:
         outer = ttk.Frame(self._root, padding=12)
