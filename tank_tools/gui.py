@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import csv
+import copy
 import queue
-import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +30,6 @@ from tank_tools.services import ArrayifyService, TagNormalizationService, TankSo
 class GuiPaths:
     input_file: Path | None = None
     docx_folder: Path | None = None
-    export_file: Path | None = None
 
 
 class _QueueWriter:
@@ -56,6 +55,14 @@ class _QueueWriter:
 
 
 class TankManagerApp:
+    INSTRUCTIONS = (
+        "You must choose an input CSV first before doing anything else. Once you choose a .csv, "
+        "it automatically populates the Live Row Preview below.\n\n"
+        "Then, after that you can now choose a Workflow option. Once you select a workflow option, "
+        'then the "Run Workflow" button can be pressed. Running a workflow updates the live row preview '
+        "but does not save a file automatically — use Export to save the preview when you are ready."
+    )
+
     def __init__(self, root: Tk) -> None:
         if tk is None or ttk is None:
             raise RuntimeError("Tkinter is not available in this Python environment.")
@@ -75,15 +82,17 @@ class TankManagerApp:
         self._event_queue: queue.Queue[dict[str, object]] = queue.Queue()
         self._latest_rows: list[list[str]] = []
         self._worker: threading.Thread | None = None
-        self._waiting_prompt: dict[str, object] | None = None
+        self._input_loaded = False
+        self._docx_valid = False
 
-        self.workflow_var = StringVar(value="normalize")
+        self.workflow_var = StringVar(value="")
         self.input_var = StringVar(value="")
-        self.docx_folder_var = StringVar(value=str(self._config.new_sounds_dir))
-        self.export_var = StringVar(value="")
-        self.status_var = StringVar(value="Ready")
+        self.docx_folder_var = StringVar(value="")
+        self.status_var = StringVar(value="Choose an input CSV to begin.")
 
         self._build_layout()
+        self.workflow_var.trace_add("write", self._on_workflow_changed)
+        self._update_control_states()
         self._root.after(100, self._process_events)
 
     def run(self) -> None:
@@ -94,36 +103,51 @@ class TankManagerApp:
         outer.pack(fill=BOTH, expand=True)
 
         header = ttk.Label(outer, text="Tank Workflow Manager", font=("Helvetica", 18, "bold"))
-        header.pack(anchor="w", pady=(0, 10))
+        header.pack(anchor="w", pady=(0, 6))
+
+        instructions = ttk.Label(outer, text=self.INSTRUCTIONS, wraplength=1150, justify="left")
+        instructions.pack(anchor="w", pady=(0, 10))
 
         controls = ttk.Frame(outer)
         controls.pack(fill=X, pady=(0, 10))
 
+        input_box = ttk.LabelFrame(controls, text="Input CSV (required first)")
+        input_box.pack(side=LEFT, fill=X, expand=True, padx=(0, 10))
+        self._add_path_row(input_box, "Input CSV", self.input_var, self._choose_input_file)
+
         workflow_box = ttk.LabelFrame(controls, text="Workflow")
         workflow_box.pack(side=LEFT, fill=Y, padx=(0, 10))
+        self._workflow_radios: list[ttk.Radiobutton] = []
         for label, value in (
             ("Normalize", "normalize"),
             ("Arrayify", "arrayify"),
             ("Sound", "sound"),
             ("All", "all"),
         ):
-            ttk.Radiobutton(workflow_box, text=label, value=value, variable=self.workflow_var).pack(anchor="w", padx=10, pady=2)
+            radio = ttk.Radiobutton(
+                workflow_box,
+                text=label,
+                value=value,
+                variable=self.workflow_var,
+                state="disabled",
+            )
+            radio.pack(anchor="w", padx=10, pady=2)
+            self._workflow_radios.append(radio)
 
-        path_box = ttk.Frame(controls)
-        path_box.pack(side=LEFT, fill=BOTH, expand=True)
-
-        self._add_path_row(path_box, "Input CSV", self.input_var, self._choose_input_file)
-        self._add_path_row(path_box, "DOCX Folder", self.docx_folder_var, self._choose_docx_folder)
-        self._add_path_row(path_box, "Export CSV", self.export_var, self._choose_export_file)
+        self.docx_box = ttk.LabelFrame(controls, text="DOCX Folder (required for Sound)")
+        self._add_path_row(self.docx_box, "DOCX Folder", self.docx_folder_var, self._choose_docx_folder)
+        self.docx_box.pack_forget()
 
         button_bar = ttk.Frame(outer)
         button_bar.pack(fill=X, pady=(0, 10))
 
-        self.run_button = ttk.Button(button_bar, text="Run Workflow", command=self._start_workflow)
+        self.run_button = ttk.Button(button_bar, text="Run Workflow", command=self._start_workflow, state="disabled")
         self.run_button.pack(side=LEFT, padx=(0, 8))
 
-        ttk.Button(button_bar, text="Export Current Preview", command=self._export_current_preview).pack(side=LEFT, padx=(0, 8))
-        ttk.Button(button_bar, text="Clear Preview", command=self._clear_preview).pack(side=LEFT)
+        self.export_button = ttk.Button(button_bar, text="Export", command=self._export_current_preview, state="disabled")
+        self.export_button.pack(side=LEFT, padx=(0, 8))
+
+        ttk.Button(button_bar, text="Clear Logs", command=self._clear_logs).pack(side=LEFT)
 
         status_bar = ttk.Label(outer, textvariable=self.status_var)
         status_bar.pack(fill=X, pady=(0, 8))
@@ -161,7 +185,7 @@ class TankManagerApp:
 
     def _add_path_row(self, parent: ttk.Frame, label: str, text_var: StringVar, chooser: Callable[[], None]) -> None:
         row = ttk.Frame(parent)
-        row.pack(fill=X, pady=3)
+        row.pack(fill=X, pady=3, padx=6)
         ttk.Label(row, text=label, width=12).pack(side=LEFT)
         entry = ttk.Entry(row, textvariable=text_var)
         entry.pack(side=LEFT, fill=X, expand=True, padx=(0, 6))
@@ -172,35 +196,95 @@ class TankManagerApp:
             title="Select input CSV",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )
-        if selected:
-            path = Path(selected)
-            self.input_var.set(str(path))
-            self._paths.input_file = path
+        if not selected:
+            return
+
+        path = Path(selected)
+        try:
+            rows = self._csv_repository.read_rows(path)
+        except OSError as exc:
+            messagebox.showerror("Input error", f"Could not read CSV: {exc}")
+            return
+
+        if not rows:
+            messagebox.showerror("Input error", "The selected CSV file is empty.")
+            return
+
+        self.input_var.set(str(path))
+        self._paths.input_file = path
+        self._input_loaded = True
+        self._latest_rows = rows
+        self._refresh_preview(rows)
+        self.workflow_var.set("")
+        self._append_log(f"Loaded input CSV: {path}\n")
+        self.status_var.set(f"Loaded {len(rows) - 1} data rows from {path.name}. Choose a workflow.")
+        self._update_control_states()
 
     def _choose_docx_folder(self) -> None:
         selected = filedialog.askdirectory(title="Select DOCX folder")
-        if selected:
-            path = Path(selected)
-            self.docx_folder_var.set(str(path))
-            self._paths.docx_folder = path
+        if not selected:
+            return
 
-    def _choose_export_file(self) -> None:
-        selected = filedialog.asksaveasfilename(
-            title="Choose export CSV path",
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-        )
-        if selected:
-            path = Path(selected)
-            self.export_var.set(str(path))
-            self._paths.export_file = path
+        path = Path(selected)
+        self.docx_folder_var.set(str(path))
+        self._paths.docx_folder = path
+        self._docx_valid = self._validate_docx_folder(path)
+        if self._docx_valid:
+            self.status_var.set(f"DOCX folder ready: {path}")
+        else:
+            self.status_var.set("DOCX folder must exist and contain at least one .docx file.")
+        self._update_control_states()
+
+    def _validate_docx_folder(self, folder: Path) -> bool:
+        if not folder.is_dir():
+            return False
+        docx_files = list(folder.glob("*.docx")) + list(folder.glob("*.DOCX"))
+        return len(docx_files) > 0
+
+    def _on_workflow_changed(self, *_args: object) -> None:
+        workflow = self.workflow_var.get()
+        if workflow in {"sound", "all"}:
+            self.docx_box.pack(side=LEFT, fill=Y)
+            if self._paths.docx_folder is not None:
+                self._docx_valid = self._validate_docx_folder(self._paths.docx_folder)
+        else:
+            self.docx_box.pack_forget()
+        self._update_control_states()
+
+    def _update_control_states(self) -> None:
+        workflow_state = "normal" if self._input_loaded else "disabled"
+        for radio in self._workflow_radios:
+            radio.configure(state=workflow_state)
+
+        can_run = self._can_run_workflow()
+        self.run_button.configure(state="normal" if can_run else "disabled")
+        self.export_button.configure(state="normal" if self._latest_rows else "disabled")
+
+    def _can_run_workflow(self) -> bool:
+        if not self._input_loaded or not self._latest_rows:
+            return False
+
+        workflow = self.workflow_var.get()
+        if workflow not in {"normalize", "arrayify", "sound", "all"}:
+            return False
+
+        if workflow in {"sound", "all"}:
+            folder = self._paths.docx_folder
+            if folder is None:
+                return False
+            return self._validate_docx_folder(folder)
+
+        return True
 
     def _start_workflow(self) -> None:
         if self._worker is not None and self._worker.is_alive():
             messagebox.showinfo("Workflow running", "A workflow is already running.")
             return
 
-        self._clear_preview()
+        if not self._can_run_workflow():
+            messagebox.showinfo("Not ready", "Choose an input CSV, select a workflow, and complete any required options.")
+            return
+
         self.status_var.set("Working...")
         self.run_button.configure(state="disabled")
 
@@ -212,47 +296,53 @@ class TankManagerApp:
         try:
             with redirect_stdout(log_writer), redirect_stderr(log_writer):
                 workflow = self.workflow_var.get()
-                input_path = Path(self.input_var.get()).expanduser() if self.input_var.get().strip() else None
-                export_path = Path(self.export_var.get()).expanduser() if self.export_var.get().strip() else None
-                sound_folder = Path(self.docx_folder_var.get()).expanduser() if self.docx_folder_var.get().strip() else None
+                preview_rows = copy.deepcopy(self._latest_rows)
+                sound_folder = self._paths.docx_folder
+                tag_prefix_path = self._paths.input_file
 
                 if workflow == "arrayify":
                     rows = self._arrayify_service.arrayify_points(
-                        input_path=input_path,
-                        output_path=export_path or self._temp_path("arrayified.csv"),
+                        input_rows=preview_rows,
+                        write_output=False,
                         event_callback=self._enqueue_event,
                     )
                 elif workflow == "sound":
                     rows = self._sounding_service.sound_tanks(
                         sound_folder=sound_folder,
-                        input_path=input_path,
-                        output_path=export_path or self._temp_path("sounded.csv"),
+                        input_rows=preview_rows,
+                        write_output=False,
                         event_callback=self._enqueue_event,
                     )
                 elif workflow == "all":
-                    temp_arrayified = self._temp_path("arrayified.csv")
-                    temp_sounded = self._temp_path("sounded.csv")
-                    self._arrayify_service.arrayify_points(
-                        input_path=input_path,
-                        output_path=temp_arrayified,
+                    arrayified = self._arrayify_service.arrayify_points(
+                        input_rows=preview_rows,
+                        write_output=False,
                         event_callback=self._enqueue_event,
                     )
-                    self._sounding_service.sound_tanks(
-                        sound_folder=sound_folder,
-                        input_path=temp_arrayified,
-                        output_path=temp_sounded,
-                        event_callback=self._enqueue_event,
-                    )
-                    rows = self._normalization_service.normalize_tags(
-                        input_path=temp_sounded,
-                        output_path=export_path or self._temp_path("normalized.csv"),
-                        event_callback=self._enqueue_event,
-                        custom_tag_provider=self._prompt_for_custom_tag,
-                    )
+                    if arrayified is None:
+                        rows = None
+                    else:
+                        sounded = self._sounding_service.sound_tanks(
+                            sound_folder=sound_folder,
+                            input_rows=arrayified,
+                            write_output=False,
+                            event_callback=self._enqueue_event,
+                        )
+                        if sounded is None:
+                            rows = None
+                        else:
+                            rows = self._normalization_service.normalize_tags(
+                                input_rows=sounded,
+                                tag_prefix_input_path=tag_prefix_path,
+                                write_output=False,
+                                event_callback=self._enqueue_event,
+                                custom_tag_provider=self._prompt_for_custom_tag,
+                            )
                 else:
                     rows = self._normalization_service.normalize_tags(
-                        input_path=input_path,
-                        output_path=export_path or self._temp_path("normalized.csv"),
+                        input_rows=preview_rows,
+                        tag_prefix_input_path=tag_prefix_path,
+                        write_output=False,
                         event_callback=self._enqueue_event,
                         custom_tag_provider=self._prompt_for_custom_tag,
                     )
@@ -264,9 +354,6 @@ class TankManagerApp:
             self._event_queue.put({"type": "error", "message": str(exc)})
         finally:
             self._event_queue.put({"type": "done"})
-
-    def _temp_path(self, suffix: str) -> Path:
-        return Path(tempfile.gettempdir()) / f"arrayify_sound_tanks_{suffix}"
 
     def _enqueue_event(self, event: dict[str, object]) -> None:
         self._event_queue.put(event)
@@ -305,7 +392,7 @@ class TankManagerApp:
                 elif event_type == "error":
                     messagebox.showerror("Workflow error", str(event.get("message", "Unknown error")))
                 elif event_type == "done":
-                    self.run_button.configure(state="normal")
+                    self._update_control_states()
         except queue.Empty:
             pass
 
@@ -335,27 +422,25 @@ class TankManagerApp:
         for item_id in self.preview_tree.get_children():
             self.preview_tree.delete(item_id)
 
-        display_rows = rows[:250]
-        for index, row in enumerate(display_rows, start=1):
+        for index, row in enumerate(rows, start=1):
             name = row[0] if len(row) > 0 else ""
             description = row[2] if len(row) > 2 else ""
             initial_value = row[12] if len(row) > 12 else ""
             ioaddress = row[15] if len(row) > 15 else ""
             self.preview_tree.insert("", END, values=(index, name, description, initial_value, ioaddress))
 
-    def _clear_preview(self) -> None:
+        self._update_control_states()
+
+    def _clear_logs(self) -> None:
         self.log_text.delete("1.0", END)
-        self._latest_rows = []
-        self._refresh_preview([])
-        self.status_var.set("Ready")
 
     def _export_current_preview(self) -> None:
         if not self._latest_rows:
-            messagebox.showinfo("Nothing to export", "Run a workflow first so there is something to export.")
+            messagebox.showinfo("Nothing to export", "Load a CSV or run a workflow so there is something to export.")
             return
 
         selected = filedialog.asksaveasfilename(
-            title="Export current preview",
+            title="Export live row preview",
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )

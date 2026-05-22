@@ -26,6 +26,8 @@ class ArrayifyService:
         self,
         input_path: Path | None = None,
         output_path: Path | None = None,
+        input_rows: list[list[str]] | None = None,
+        write_output: bool = True,
         event_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> list[list[str]] | None:
         print("Array-ify-ing...")
@@ -36,15 +38,15 @@ class ArrayifyService:
         if event_callback is not None:
             event_callback({"type": "status", "message": "Starting arrayify workflow."})
 
-        if not input_path.is_file():
+        if input_rows is None and not input_path.is_file():
             print(f"Input file not found: {input_path}")
             return
 
-        if output_path.exists():
+        if write_output and output_path.exists():
             print(f"Conflicting output file path: {output_path}")
             return
 
-        rows = self._csv_repository.read_rows(input_path)
+        rows = input_rows if input_rows is not None else self._csv_repository.read_rows(input_path)
         if not rows:
             print("Input file is empty.")
             return
@@ -139,8 +141,9 @@ class ArrayifyService:
             row_index = scan_index
 
         self._print_summary(summary_rows)
-        self._csv_repository.write_rows(output_path, output_rows)
-        print(f"Wrote {len(output_rows) - 1} modified rows to {output_path}")
+        if write_output:
+            self._csv_repository.write_rows(output_path, output_rows)
+            print(f"Wrote {len(output_rows) - 1} modified rows to {output_path}")
 
         if event_callback is not None:
             event_callback({"type": "completed", "workflow": "arrayify", "rows": output_rows.copy()})
@@ -208,6 +211,8 @@ class TankSoundingService:
         sound_folder: Path | None = None,
         input_path: Path | None = None,
         output_path: Path | None = None,
+        input_rows: list[list[str]] | None = None,
+        write_output: bool = True,
         event_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> list[list[str]] | None:
         print("Sounding tanks....")
@@ -223,15 +228,15 @@ class TankSoundingService:
         input_path = input_path or self._config.arrayified_csv_path
         output_path = output_path or self._config.sounded_csv_path
 
-        if not input_path.is_file():
+        if input_rows is None and not input_path.is_file():
             print(f"Template file not found: {input_path}")
             return
 
-        if output_path.exists():
+        if write_output and output_path.exists():
             print(f"Conflicting output file path: {output_path}")
             return
 
-        rows = self._csv_repository.read_rows(input_path)
+        rows = input_rows if input_rows is not None else self._csv_repository.read_rows(input_path)
         if not rows:
             print("Template file is empty. You must arrayify the input file first.")
             return
@@ -318,8 +323,9 @@ class TankSoundingService:
         unmatched_csv_rows = [description for _, description in base_rows if description not in matched_metadata_by_description]
 
         self._print_sound_mapping_report(matched_rows, unmatched_doc_tables, unmatched_csv_rows)
-        self._csv_repository.write_rows(output_path, rows)
-        print(f"Wrote sounded CSV to {output_path}")
+        if write_output:
+            self._csv_repository.write_rows(output_path, rows)
+            print(f"Wrote sounded CSV to {output_path}")
 
         if event_callback is not None:
             event_callback({"type": "completed", "workflow": "sound", "rows": rows.copy()})
@@ -407,29 +413,43 @@ class TagNormalizationService:
         self,
         input_path: Path | None = None,
         output_path: Path | None = None,
+        input_rows: list[list[str]] | None = None,
+        tag_prefix_input_path: Path | None = None,
+        write_output: bool = True,
         event_callback: Callable[[dict[str, object]], None] | None = None,
         custom_tag_provider: Callable[[str], str | None] | None = None,
     ) -> list[list[str]] | None:
         print("Normalizing tags....")
 
-        source_path = input_path or self._find_source_path()
-        if source_path is None:
-            print("No arrayified or sounded CSV found. Run arrayify first.")
-            return
+        if input_rows is None:
+            source_path = input_path or self._find_source_path()
+            if source_path is None:
+                print("No arrayified or sounded CSV found. Run arrayify first.")
+                return
+            rows = self._csv_repository.read_rows(source_path)
+            if not rows:
+                print(f"Source file is empty: {source_path}")
+                return
+        else:
+            rows = input_rows
 
         output_path = output_path or self._config.normalized_csv_path
-        if output_path.exists():
+        if write_output and output_path.exists():
             print(f"Conflicting output file path: {output_path}")
             return
 
-        rows = self._csv_repository.read_rows(source_path)
         if not rows:
-            print(f"Source file is empty: {source_path}")
+            print("Input rows are empty.")
             return
 
-        prefix_map = self._rules.load_tag_prefix_map(self._csv_repository.read_rows(self._config.input_csv_path))
+        tag_prefix_source = tag_prefix_input_path or self._config.input_csv_path
+        if not tag_prefix_source.is_file():
+            print(f"Tag prefix source file not found: {tag_prefix_source}")
+            return
+
+        prefix_map = self._rules.load_tag_prefix_map(self._csv_repository.read_rows(tag_prefix_source))
         if not prefix_map:
-            print(f"Tag prefix map could not be built from {self._config.input_csv_path}.")
+            print(f"Tag prefix map could not be built from {tag_prefix_source}.")
             return
 
         renamed_rows = 0
@@ -501,9 +521,12 @@ class TagNormalizationService:
             renamed_rows += 1
 
         self._print_normalize_summary(matched_rows, unmatched_rows)
-        self._csv_repository.write_rows(output_path, rows)
-        print(f"Normalized {renamed_rows} row names.")
-        print(f"Wrote normalized CSV to {output_path}")
+        if write_output:
+            self._csv_repository.write_rows(output_path, rows)
+            print(f"Normalized {renamed_rows} row names.")
+            print(f"Wrote normalized CSV to {output_path}")
+        else:
+            print(f"Normalized {renamed_rows} row names.")
 
         if event_callback is not None:
             event_callback({"type": "completed", "workflow": "normalize", "rows": rows.copy()})
