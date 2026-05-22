@@ -117,7 +117,28 @@ def canonicalize_tank_description(description: str) -> str:
     return canonical_description
 
 
-def normalize_tag_name(row: list[str], prefix_map: dict[str, str]) -> str | None:
+def format_custom_tag_name(custom_tag: str) -> str | None:
+    normalized_custom_tag = re.sub(r"[\s-]+", "_", custom_tag.strip())
+    if not normalized_custom_tag:
+        return None
+
+    if normalized_custom_tag.endswith("_TANK_TABLE"):
+        return normalized_custom_tag
+
+    if normalized_custom_tag.endswith("_TABLE"):
+        normalized_custom_tag = normalized_custom_tag[: -len("_TABLE")]
+
+    if normalized_custom_tag.endswith("_TANK"):
+        return f"{normalized_custom_tag}_TABLE"
+
+    return f"{normalized_custom_tag}_TANK_TABLE"
+
+
+def normalize_tag_name(
+    row: list[str],
+    prefix_map: dict[str, str],
+    custom_tag_map: dict[str, str] | None = None,
+) -> str | None:
     if len(row) <= 2:
         return None
 
@@ -127,6 +148,17 @@ def normalize_tag_name(row: list[str], prefix_map: dict[str, str]) -> str | None
 
     description_match = TANK_DESCRIPTION_RE.match(description)
     base_description = description_match.group(1).strip() if description_match else description
+    if custom_tag_map is not None and base_description in custom_tag_map:
+        base_name = custom_tag_map[base_description]
+        register_match = REGISTER_ARRAY_NAME_RE.match(row[0])
+        if register_match:
+            return f"{base_name}[{register_match.group(2)}]"
+
+        if is_register_name(row[0]):
+            return base_name
+
+        return None
+
     override_prefix = TAG_PREFIX_OVERRIDES.get(base_description)
     if override_prefix is not None:
         prefix = override_prefix
@@ -461,6 +493,8 @@ def normalize_tags() -> None:
     renamed_rows = 0
     matched_rows: list[dict[str, str]] = []
     unmatched_rows: list[dict[str, str]] = []
+    custom_tag_map: dict[str, str] = {}
+    prompted_descriptions: set[str] = set()
 
     for row in rows[1:]:
         if len(row) <= 2:
@@ -472,15 +506,35 @@ def normalize_tags() -> None:
             continue
 
         if is_register_name(row[0]) or REGISTER_ARRAY_NAME_RE.match(row[0]):
-            normalized_name = normalize_tag_name(row, prefix_map)
+            normalized_name = normalize_tag_name(row, prefix_map, custom_tag_map)
             if normalized_name is None:
-                unmatched_rows.append(
-                    {
-                        "register": source_register,
-                        "description": description,
-                    }
-                )
-                continue
+                if description_match := TANK_DESCRIPTION_RE.match(description):
+                    base_description = description_match.group(1).strip()
+                else:
+                    base_description = description
+
+                if base_description not in prompted_descriptions:
+                    prompted_descriptions.add(base_description)
+                    custom_input = input(
+                        f"No tag match for '{base_description}'. Enter a custom tag prefix, or press Enter to leave it unchanged: "
+                    ).strip()
+
+                    if custom_input:
+                        custom_tag_name = format_custom_tag_name(custom_input)
+                        if custom_tag_name is None:
+                            print(f"Skipping '{base_description}' because the custom tag was empty.")
+                        else:
+                            custom_tag_map[base_description] = custom_tag_name
+                            normalized_name = normalize_tag_name(row, prefix_map, custom_tag_map)
+
+                if normalized_name is None:
+                    unmatched_rows.append(
+                        {
+                            "register": source_register,
+                            "description": description,
+                        }
+                    )
+                    continue
 
             matched_rows.append(
                 {
@@ -496,7 +550,7 @@ def normalize_tags() -> None:
             renamed_rows += 1
             continue
 
-        normalized_name = normalize_tag_name(row, prefix_map)
+        normalized_name = normalize_tag_name(row, prefix_map, custom_tag_map)
         if normalized_name is None or normalized_name == row[0]:
             continue
 
