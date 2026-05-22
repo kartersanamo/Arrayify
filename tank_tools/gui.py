@@ -13,13 +13,29 @@ from contextlib import redirect_stderr, redirect_stdout
 
 try:
     import tkinter as tk
-    from tkinter import END, HORIZONTAL, LEFT, RIGHT, BOTH, VERTICAL, X, Y, filedialog, messagebox, simpledialog, StringVar, Text, Tk
+    from tkinter import (
+        END,
+        HORIZONTAL,
+        LEFT,
+        RIGHT,
+        BOTH,
+        VERTICAL,
+        X,
+        Y,
+        BooleanVar,
+        filedialog,
+        messagebox,
+        simpledialog,
+        StringVar,
+        Text,
+        Tk,
+    )
     from tkinter import ttk
 except ModuleNotFoundError:  # pragma: no cover - handled at runtime in environments without Tk
     tk = None
     END = HORIZONTAL = LEFT = RIGHT = BOTH = VERTICAL = X = Y = None
     filedialog = messagebox = simpledialog = None
-    StringVar = Text = Tk = object
+    BooleanVar = StringVar = Text = Tk = object
     ttk = None
 
 from tank_tools.app_identity import APP_TITLE, apply_tk_window_identity, configure_app_identity
@@ -93,6 +109,7 @@ class TankManagerApp:
         self.input_var = StringVar(value="")
         self.docx_folder_var = StringVar(value="")
         self.status_var = StringVar(value="Choose an input CSV to begin.")
+        self.keep_other_values_var = BooleanVar(value=False)
 
         self._build_layout()
         self.workflow_var.trace_add("write", self._on_workflow_changed)
@@ -139,6 +156,14 @@ class TankManagerApp:
         self.export_button.pack(side=LEFT, padx=(0, 8))
 
         ttk.Button(button_cluster, text="Clear Logs", command=self._clear_logs).pack(side=LEFT)
+
+        self.keep_other_values_check = ttk.Checkbutton(
+            button_cluster,
+            text="Keep Other Values",
+            variable=self.keep_other_values_var,
+            state="disabled",
+        )
+        self.keep_other_values_check.pack(side=LEFT, padx=(12, 0))
 
         workflow_box = ttk.LabelFrame(action_bar, text="Workflow")
         workflow_box.pack(side=RIGHT, fill=Y)
@@ -292,6 +317,8 @@ class TankManagerApp:
         for radio in self._workflow_radios:
             radio.configure(state=workflow_state)
 
+        self.keep_other_values_check.configure(state=workflow_state)
+
         can_run = self._can_run_workflow()
         self.run_button.configure(state="normal" if can_run else "disabled")
         self.export_button.configure(state="normal" if self._latest_rows else "disabled")
@@ -335,11 +362,13 @@ class TankManagerApp:
                 preview_rows = copy.deepcopy(self._latest_rows)
                 sound_folder = self._paths.docx_folder
                 tag_prefix_path = self._paths.input_file
+                keep_other_values = self.keep_other_values_var.get()
 
                 if workflow == "arrayify":
                     rows = self._arrayify_service.arrayify_points(
                         input_rows=preview_rows,
                         write_output=False,
+                        keep_other_values=keep_other_values,
                         event_callback=self._enqueue_event,
                     )
                 elif workflow == "sound":
@@ -354,6 +383,7 @@ class TankManagerApp:
                     arrayified = self._arrayify_service.arrayify_points(
                         input_rows=preview_rows,
                         write_output=False,
+                        keep_other_values=keep_other_values,
                         event_callback=self._enqueue_event,
                     )
                     if arrayified is None:

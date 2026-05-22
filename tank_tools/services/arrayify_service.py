@@ -21,6 +21,7 @@ class ArrayifyService:
         output_path: Path | None = None,
         input_rows: list[list[str]] | None = None,
         write_output: bool = True,
+        keep_other_values: bool = False,
         event_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> list[list[str]] | None:
         print("Array-ify-ing...")
@@ -51,11 +52,15 @@ class ArrayifyService:
         while row_index < len(rows):
             row = rows[row_index]
             if len(row) <= 15 or not self._rules.is_register_name(row[0]):
+                if keep_other_values:
+                    output_rows.append(row.copy())
                 row_index += 1
                 continue
 
             description_match = self._rules.tank_description_re.match(row[2])
             if not description_match or description_match.group(2) != "0":
+                if keep_other_values:
+                    output_rows.append(row.copy())
                 row_index += 1
                 continue
 
@@ -90,6 +95,8 @@ class ArrayifyService:
                 scan_index += 1
 
             if len(block_rows) <= 1:
+                if keep_other_values:
+                    output_rows.append(row.copy())
                 row_index += 1
                 continue
 
