@@ -112,6 +112,7 @@ class TankManagerApp:
         self._baseline_rows: list[list[str]] = []
         self._change_tracker: RowChangeTracker | None = None
         self._work_reg_bindings: dict[str, list[str]] = {}
+        self._custom_tag_responses: dict[str, str | None] = {}
         self._worker: threading.Thread | None = None
         self._input_loaded = False
         self._docx_valid = False
@@ -280,6 +281,7 @@ class TankManagerApp:
         self._baseline_rows = copy.deepcopy(rows)
         self._change_tracker = RowChangeTracker(self._baseline_rows)
         self._work_reg_bindings = scan_work_register_bindings(rows, self._rules)
+        self._custom_tag_responses = {}
         self._latest_rows = rows
         self._refresh_preview(rows)
         self.workflow_var.set("")
@@ -454,6 +456,9 @@ class TankManagerApp:
         )
 
     def _prompt_for_custom_tag(self, description: str) -> str | None:
+        if description in self._custom_tag_responses:
+            return self._custom_tag_responses[description]
+
         result: dict[str, str | None] = {"value": None}
         done = threading.Event()
 
@@ -469,6 +474,7 @@ class TankManagerApp:
 
         self._root.after(0, show_dialog)
         done.wait()
+        self._custom_tag_responses[description] = result["value"]
         return result["value"]
 
     def _process_events(self) -> None:

@@ -22,6 +22,21 @@ class TankCli:
         self._normalization_service = TagNormalizationService(self._config, self._csv_repository, self._rules)
         self._work_reg_service = TankWorkRegService(self._config, self._csv_repository, self._rules)
         self._work_reg_bindings: dict[str, list[str]] = {}
+        self._custom_tag_responses: dict[str, str | None] = {}
+
+    def _custom_tag_provider(self, description: str) -> str | None:
+        if description in self._custom_tag_responses:
+            return self._custom_tag_responses[description]
+
+        custom_input = input(
+            f"No tag match for '{description}'. Enter a custom tag prefix, or press Enter to skip: "
+        ).strip()
+        value = custom_input or None
+        self._custom_tag_responses[description] = value
+        return value
+
+    def _reset_custom_tag_responses(self) -> None:
+        self._custom_tag_responses = {}
 
     def run(self) -> None:
         options: dict[int, list] = {
@@ -64,6 +79,7 @@ class TankCli:
             return None
 
         self._work_reg_bindings = scan_work_register_bindings(rows, self._rules)
+        self._reset_custom_tag_responses()
         return rows
 
     def _load_bindings_from_input(self) -> bool:
@@ -94,6 +110,7 @@ class TankCli:
             input_rows=rows,
             tag_prefix_input_path=self._config.input_csv_path,
             write_output=write_output,
+            custom_tag_provider=self._custom_tag_provider,
         )
 
     def _run_normalize_on_rows(self, rows: list[list[str]], *, write_output: bool) -> list[list[str]] | None:
@@ -101,6 +118,7 @@ class TankCli:
             input_rows=rows,
             tag_prefix_input_path=self._config.input_csv_path,
             write_output=write_output,
+            custom_tag_provider=self._custom_tag_provider,
         )
 
     def _run_arrayify(self) -> None:
