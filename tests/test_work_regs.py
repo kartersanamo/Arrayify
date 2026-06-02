@@ -186,6 +186,32 @@ class RowChangeTrackerTests(unittest.TestCase):
         self.assertIn("R999", exported_names)
         self.assertNotIn("R101", exported_names)
 
+    def test_dual_export_when_name_and_ioaddress_change(self) -> None:
+        baseline = build_lm4p_block()
+        current = copy.deepcopy(baseline)
+        current[2][0] = "LM_4P_WORK_REG[0]"
+        current[2][2] = "Liquid Mud #4-P Tank Input"
+        current[2][15] = ""
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        plan = tracker.export_plan(current)
+
+        self.assertTrue(plan.needs_dual_export)
+        self.assertEqual(plan.match_pass_rows[1][0], "LM_4P_WORK_REG[0]")
+        self.assertEqual(plan.match_pass_rows[1][15], "%R00101")
+        self.assertEqual(plan.final_rows[1][15], "")
+
+    def test_single_export_when_only_description_changes(self) -> None:
+        baseline = build_lm4p_block()
+        current = copy.deepcopy(baseline)
+        current[1][2] = "Changed description"
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        plan = tracker.export_plan(current)
+
+        self.assertFalse(plan.needs_dual_export)
+        self.assertEqual(plan.match_pass_rows, plan.final_rows)
+
 
 class NormalizeWorkRegSkipTests(unittest.TestCase):
     def setUp(self) -> None:

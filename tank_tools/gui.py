@@ -648,23 +648,39 @@ class TankManagerApp:
             messagebox.showinfo("Nothing to export", "Load a CSV before exporting modified rows.")
             return
 
-        export_rows = self._change_tracker.rows_for_export(self._latest_rows)
-        modified_count = max(0, len(export_rows) - 1)
-        if modified_count == 0:
+        export_plan = self._change_tracker.export_plan(self._latest_rows)
+        if export_plan.modified_row_count == 0:
             messagebox.showinfo("Nothing to export", "No rows were modified from the loaded CSV.")
             return
 
         selected = filedialog.asksaveasfilename(
-            title="Export modified rows",
+            title="Export modified rows (final)",
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )
         if not selected:
             return
 
-        export_path = Path(selected)
+        final_path = Path(selected)
+        self._write_export_rows(final_path, export_plan.final_rows)
+
+        if export_plan.needs_dual_export:
+            match_path = final_path.with_name(f"{final_path.stem}_match{final_path.suffix}")
+            self._write_export_rows(match_path, export_plan.match_pass_rows)
+            self.status_var.set(
+                f"Exported {export_plan.modified_row_count} modified rows to "
+                f"{match_path.name} (match pass) and {final_path.name} (final)."
+            )
+            self._append_log(
+                f"Dual export complete: {match_path} keeps original IO addresses for import matching; "
+                f"{final_path} is the final version.\n",
+                level="success",
+            )
+        else:
+            self.status_var.set(f"Exported {export_plan.modified_row_count} modified rows to {final_path}")
+
+    @staticmethod
+    def _write_export_rows(export_path: Path, rows: list[list[str]]) -> None:
         with export_path.open("w", newline="") as output_file:
             writer = csv.writer(output_file, dialect="excel")
-            writer.writerows(export_rows)
-
-        self.status_var.set(f"Exported {modified_count} modified rows to {export_path}")
+            writer.writerows(rows)
