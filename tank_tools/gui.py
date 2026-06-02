@@ -39,7 +39,7 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime in environm
     ttk = None
 
 from tank_tools.app_identity import APP_TITLE, apply_tk_window_identity, configure_app_identity
-from tank_tools.change_tracker import RowChangeTracker
+from tank_tools.change_tracker import ExportPlan, RowChangeTracker
 from tank_tools.config import ProjectConfig
 from tank_tools.work_reg_registry import scan_work_register_bindings
 from tank_tools.io import CsvRepository
@@ -487,6 +487,18 @@ class TankManagerApp:
                     messagebox.showerror("Workflow error", error_message)
                 elif event_type == "done":
                     self._update_control_states()
+                elif event_type == "export_ready":
+                    export_plan = event.get("plan")
+                    if isinstance(export_plan, ExportPlan):
+                        self._finish_export(export_plan)
+                elif event_type == "export_error":
+                    error_message = str(event.get("message", "Unknown export error"))
+                    self._append_log(error_message, level="error")
+                    messagebox.showerror("Export error", error_message)
+                elif event_type == "export_done":
+                    self._update_control_states()
+                    if self._input_loaded:
+                        self.status_var.set("Ready to export.")
         except queue.Empty:
             pass
 
@@ -648,7 +660,24 @@ class TankManagerApp:
             messagebox.showinfo("Nothing to export", "Load a CSV before exporting modified rows.")
             return
 
-        export_plan = self._change_tracker.export_plan(self._latest_rows)
+        self.export_button.configure(state="disabled")
+        self.status_var.set("Preparing export...")
+
+        export_rows = copy.deepcopy(self._latest_rows)
+        change_tracker = self._change_tracker
+
+        def prepare_export() -> None:
+            try:
+                export_plan = change_tracker.export_plan(export_rows)
+                self._event_queue.put({"type": "export_ready", "plan": export_plan})
+            except Exception as exc:  # pragma: no cover - surfaced in GUI
+                self._event_queue.put({"type": "export_error", "message": str(exc)})
+            finally:
+                self._event_queue.put({"type": "export_done"})
+
+        threading.Thread(target=prepare_export, daemon=True).start()
+
+    def _finish_export(self, export_plan: ExportPlan) -> None:
         if export_plan.modified_row_count == 0:
             messagebox.showinfo("Nothing to export", "No rows were modified from the loaded CSV.")
             return
