@@ -27,16 +27,18 @@ class TankCli:
         options: dict[int, list] = {
             1: [self._run_arrayify],
             2: [self._sounding_service.sound_tanks],
-            3: [self._run_normalize],
-            4: [self._run_all],
+            3: [self._run_tank_registers],
+            4: [self._run_normalize],
+            5: [self._run_all],
         }
 
         print("Program options:")
         print("- 1) Array-ify points")
         print("- 2) Sound tanks")
-        print("- 3) Normalize tag names")
-        print("- 4) All")
-        option_choice = input("Enter your choice (1, 2, 3, 4): ")
+        print("- 3) Label tank registers")
+        print("- 4) Normalize tag names")
+        print("- 5) All")
+        option_choice = input("Enter your choice (1, 2, 3, 4, 5): ")
 
         if not option_choice.isdigit():
             print("Please enter a number.")
@@ -44,7 +46,7 @@ class TankCli:
 
         option_choice_int = int(option_choice)
         if option_choice_int not in options:
-            print("Please enter a number 1-4.")
+            print("Please enter a number 1-5.")
             return
 
         print("")
@@ -71,18 +73,32 @@ class TankCli:
         rows = self._read_input_rows()
         return rows is not None
 
-    def _run_normalize_on_rows(self, rows: list[list[str]], *, write_output: bool) -> list[list[str]] | None:
-        labeled_rows = self._work_reg_service.label_work_registers(
+    def _load_processed_rows(self) -> list[list[str]] | None:
+        source_path = self._config.sounded_csv_path
+        if not source_path.is_file():
+            source_path = self._config.arrayified_csv_path
+        if not source_path.is_file():
+            print("No arrayified or sounded CSV found. Run arrayify first.")
+            return None
+
+        rows = self._csv_repository.read_rows(source_path)
+        if not rows:
+            print(f"Source file is empty: {source_path}")
+            return None
+
+        return rows
+
+    def _run_tank_registers_on_rows(self, rows: list[list[str]], *, write_output: bool) -> list[list[str]] | None:
+        return self._work_reg_service.label_work_registers(
             self._work_reg_bindings,
             input_rows=rows,
             tag_prefix_input_path=self._config.input_csv_path,
-            write_output=False,
+            write_output=write_output,
         )
-        if labeled_rows is None:
-            return None
 
+    def _run_normalize_on_rows(self, rows: list[list[str]], *, write_output: bool) -> list[list[str]] | None:
         return self._normalization_service.normalize_tags(
-            input_rows=labeled_rows,
+            input_rows=rows,
             tag_prefix_input_path=self._config.input_csv_path,
             write_output=write_output,
         )
@@ -94,20 +110,22 @@ class TankCli:
 
         self._arrayify_service.arrayify_points(input_rows=rows)
 
+    def _run_tank_registers(self) -> None:
+        if not self._load_bindings_from_input():
+            return
+
+        processed_rows = self._load_processed_rows()
+        if processed_rows is None:
+            return
+
+        self._run_tank_registers_on_rows(processed_rows, write_output=True)
+
     def _run_normalize(self) -> None:
         if not self._load_bindings_from_input():
             return
 
-        source_path = self._config.sounded_csv_path
-        if not source_path.is_file():
-            source_path = self._config.arrayified_csv_path
-        if not source_path.is_file():
-            print("No arrayified or sounded CSV found. Run arrayify first.")
-            return
-
-        processed_rows = self._csv_repository.read_rows(source_path)
-        if not processed_rows:
-            print(f"Source file is empty: {source_path}")
+        processed_rows = self._load_processed_rows()
+        if processed_rows is None:
             return
 
         self._run_normalize_on_rows(processed_rows, write_output=True)
@@ -125,4 +143,8 @@ class TankCli:
         if sounded_rows is None:
             return
 
-        self._run_normalize_on_rows(sounded_rows, write_output=True)
+        labeled_rows = self._run_tank_registers_on_rows(sounded_rows, write_output=False)
+        if labeled_rows is None:
+            return
+
+        self._run_normalize_on_rows(labeled_rows, write_output=True)

@@ -173,9 +173,10 @@ class TankManagerApp:
         workflow_row.pack(padx=8, pady=6)
         self._workflow_radios: list[ttk.Radiobutton] = []
         for label, value in (
-            ("Normalize", "normalize"),
             ("Arrayify", "arrayify"),
             ("Sound", "sound"),
+            ("Tank Registers", "tank_registers"),
+            ("Normalize", "normalize"),
             ("All", "all"),
         ):
             radio = ttk.Radiobutton(
@@ -331,7 +332,7 @@ class TankManagerApp:
             return False
 
         workflow = self.workflow_var.get()
-        if workflow not in {"normalize", "arrayify", "sound", "all"}:
+        if workflow not in {"normalize", "arrayify", "sound", "tank_registers", "all"}:
             return False
 
         if workflow in {"sound", "all"}:
@@ -380,6 +381,10 @@ class TankManagerApp:
                         cli_style=False,
                         event_callback=self._enqueue_event,
                     )
+                elif workflow == "tank_registers":
+                    rows = self._run_tank_registers_workflow(preview_rows, tag_prefix_path)
+                elif workflow == "normalize":
+                    rows = self._run_normalize_workflow(preview_rows, tag_prefix_path)
                 elif workflow == "all":
                     arrayified = self._arrayify_service.arrayify_points(
                         input_rows=preview_rows,
@@ -399,9 +404,13 @@ class TankManagerApp:
                         if sounded is None:
                             rows = None
                         else:
-                            rows = self._run_normalize_workflow(sounded, tag_prefix_path)
+                            labeled = self._run_tank_registers_workflow(sounded, tag_prefix_path)
+                            if labeled is None:
+                                rows = None
+                            else:
+                                rows = self._run_normalize_workflow(labeled, tag_prefix_path)
                 else:
-                    rows = self._run_normalize_workflow(preview_rows, tag_prefix_path)
+                    rows = None
 
                 if rows is not None:
                     self._event_queue.put({"type": "rows", "rows": rows})
@@ -414,12 +423,12 @@ class TankManagerApp:
     def _enqueue_event(self, event: dict[str, object]) -> None:
         self._event_queue.put(event)
 
-    def _run_normalize_workflow(
+    def _run_tank_registers_workflow(
         self,
         rows: list[list[str]],
         tag_prefix_path: Path | None,
     ) -> list[list[str]] | None:
-        labeled_rows = self._work_reg_service.label_work_registers(
+        return self._work_reg_service.label_work_registers(
             self._work_reg_bindings,
             input_rows=rows,
             tag_prefix_input_path=tag_prefix_path,
@@ -428,11 +437,14 @@ class TankManagerApp:
             event_callback=self._enqueue_event,
             custom_tag_provider=self._prompt_for_custom_tag,
         )
-        if labeled_rows is None:
-            return None
 
+    def _run_normalize_workflow(
+        self,
+        rows: list[list[str]],
+        tag_prefix_path: Path | None,
+    ) -> list[list[str]] | None:
         return self._normalization_service.normalize_tags(
-            input_rows=labeled_rows,
+            input_rows=rows,
             tag_prefix_input_path=tag_prefix_path,
             write_output=False,
             cli_style=False,
