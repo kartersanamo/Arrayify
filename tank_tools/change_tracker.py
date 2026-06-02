@@ -38,6 +38,7 @@ class RowChangeTracker:
         current_rows: list[list[str]],
         work_reg_bindings: dict[str, list[str]] | None = None,
         prefix_map: dict[str, str] | None = None,
+        work_registers_only: bool = False,
     ) -> ExportPlan:
         if not current_rows:
             return ExportPlan(first_pass_rows=[], second_pass_rows=[], needs_dual_export=False)
@@ -71,9 +72,18 @@ class RowChangeTracker:
                 rules,
             )
             if baseline_row is None:
+                if work_registers_only and not self._is_work_register_export_row(
+                    current_row, None, work_reg_bindings, rules
+                ):
+                    continue
                 copied_row = self._copy_row(current_row)
                 first_pass_rows.append(copied_row)
                 second_pass_rows.append(self._copy_row(current_row))
+                continue
+
+            if work_registers_only and not self._is_work_register_export_row(
+                current_row, baseline_row, work_reg_bindings, rules
+            ):
                 continue
 
             if not self._rows_differ(current_row, baseline_row):
@@ -179,6 +189,24 @@ class RowChangeTracker:
         baseline_row = candidates[0]
         used_baseline_names.add(self._cell(baseline_row, NAME_COLUMN))
         return baseline_row
+
+    @staticmethod
+    def _is_work_register_export_row(
+        current_row: list[str],
+        baseline_row: list[str] | None,
+        work_reg_bindings: dict[str, list[str]] | None,
+        rules: TankRules,
+    ) -> bool:
+        if rules.is_work_reg_tag(RowChangeTracker._cell(current_row, NAME_COLUMN)):
+            return True
+        if baseline_row is None or not work_reg_bindings:
+            return False
+
+        baseline_name = RowChangeTracker._cell(baseline_row, NAME_COLUMN)
+        binding_registers = {
+            register for registers in work_reg_bindings.values() for register in registers
+        }
+        return baseline_name in binding_registers
 
     @staticmethod
     def _resolve_from_array_register(

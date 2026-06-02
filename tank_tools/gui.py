@@ -164,7 +164,16 @@ class TankManagerApp:
         self.run_button.pack(side=LEFT, padx=(0, 8))
 
         self.export_button = ttk.Button(button_cluster, text="Export", command=self._export_current_preview, state="disabled")
-        self.export_button.pack(side=LEFT, padx=(0, 8))
+        self.export_button.pack(side=LEFT, padx=(0, 4))
+
+        self.export_regs_button = ttk.Button(
+            button_cluster,
+            text="Regs",
+            width=5,
+            command=self._export_tank_registers_only,
+            state="disabled",
+        )
+        self.export_regs_button.pack(side=LEFT, padx=(0, 8))
 
         ttk.Button(button_cluster, text="Clear Logs", command=self._clear_logs).pack(side=LEFT)
 
@@ -327,7 +336,9 @@ class TankManagerApp:
 
         can_run = self._can_run_workflow()
         self.run_button.configure(state="normal" if can_run else "disabled")
-        self.export_button.configure(state="normal" if self._latest_rows else "disabled")
+        export_state = "normal" if self._latest_rows else "disabled"
+        self.export_button.configure(state=export_state)
+        self.export_regs_button.configure(state=export_state)
 
     def _can_run_workflow(self) -> bool:
         if not self._input_loaded or not self._latest_rows:
@@ -508,7 +519,10 @@ class TankManagerApp:
                 elif event_type == "export_ready":
                     export_plan = event.get("plan")
                     if isinstance(export_plan, ExportPlan):
-                        self._finish_export(export_plan)
+                        self._finish_export(
+                            export_plan,
+                            work_registers_only=bool(event.get("work_registers_only")),
+                        )
                 elif event_type == "export_error":
                     error_message = str(event.get("message", "Unknown export error"))
                     self._append_log(error_message, level="error")
@@ -669,7 +683,10 @@ class TankManagerApp:
         self.log_text.configure(state="disabled")
         self._append_log("Console cleared.", level="muted")
 
-    def _export_current_preview(self) -> None:
+    def _export_tank_registers_only(self) -> None:
+        self._export_current_preview(work_registers_only=True)
+
+    def _export_current_preview(self, work_registers_only: bool = False) -> None:
         if not self._latest_rows:
             messagebox.showinfo("Nothing to export", "Load a CSV or run a workflow so there is something to export.")
             return
@@ -679,7 +696,8 @@ class TankManagerApp:
             return
 
         self.export_button.configure(state="disabled")
-        self.status_var.set("Preparing export...")
+        self.export_regs_button.configure(state="disabled")
+        self.status_var.set("Preparing tank register export..." if work_registers_only else "Preparing export...")
 
         export_rows = copy.deepcopy(self._latest_rows)
         change_tracker = self._change_tracker
@@ -694,8 +712,15 @@ class TankManagerApp:
                     export_rows,
                     work_reg_bindings=work_reg_bindings,
                     prefix_map=prefix_map,
+                    work_registers_only=work_registers_only,
                 )
-                self._event_queue.put({"type": "export_ready", "plan": export_plan})
+                self._event_queue.put(
+                    {
+                        "type": "export_ready",
+                        "plan": export_plan,
+                        "work_registers_only": work_registers_only,
+                    }
+                )
             except Exception as exc:  # pragma: no cover - surfaced in GUI
                 self._event_queue.put({"type": "export_error", "message": str(exc)})
             finally:
@@ -703,13 +728,18 @@ class TankManagerApp:
 
         threading.Thread(target=prepare_export, daemon=True).start()
 
-    def _finish_export(self, export_plan: ExportPlan) -> None:
+    def _finish_export(self, export_plan: ExportPlan, work_registers_only: bool = False) -> None:
         if export_plan.modified_row_count == 0:
-            messagebox.showinfo("Nothing to export", "No rows were modified from the loaded CSV.")
+            message = (
+                "No tank register rows were modified from the loaded CSV."
+                if work_registers_only
+                else "No rows were modified from the loaded CSV."
+            )
+            messagebox.showinfo("Nothing to export", message)
             return
 
         selected = filedialog.asksaveasfilename(
-            title="Export modified rows",
+            title="Export tank register rows" if work_registers_only else "Export modified rows",
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )
@@ -717,24 +747,28 @@ class TankManagerApp:
             return
 
         selected_path = Path(selected)
+        row_label = "tank register row" if work_registers_only else "modified row"
+        rows_label = f"{row_label}s" if export_plan.modified_row_count != 1 else row_label
 
         if export_plan.needs_dual_export:
             first_path, second_path = ExportPlan.export_paths(selected_path)
             self._write_export_rows(first_path, export_plan.first_pass_rows)
             self._write_export_rows(second_path, export_plan.second_pass_rows)
             self.status_var.set(
-                f"Exported {export_plan.modified_row_count} modified rows to "
+                f"Exported {export_plan.modified_row_count} {rows_label} to "
                 f"{first_path.name} and {second_path.name}."
             )
             self._append_log(
-                f"Dual export complete:\n"
+                f"{'Tank register ' if work_registers_only else ''}Dual export complete:\n"
                 f"- {first_path.name}: updated rows with original IO addresses for import matching\n"
                 f"- {second_path.name}: final live preview values\n",
                 level="success",
             )
         else:
             self._write_export_rows(selected_path, export_plan.second_pass_rows)
-            self.status_var.set(f"Exported {export_plan.modified_row_count} modified rows to {selected_path}")
+            self.status_var.set(
+                f"Exported {export_plan.modified_row_count} {rows_label} to {selected_path}"
+            )
 
     @staticmethod
     def _write_export_rows(export_path: Path, rows: list[list[str]]) -> None:

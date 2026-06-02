@@ -262,6 +262,23 @@ class RowChangeTrackerTests(unittest.TestCase):
         self.assertEqual(plan.first_pass_rows[1][15], "%R99999")
         self.assertEqual(plan.first_pass_rows, plan.second_pass_rows)
 
+    def test_work_registers_only_export_excludes_other_changes(self) -> None:
+        baseline = build_lm4p_block()
+        current = copy.deepcopy(baseline)
+        current[1][2] = "Changed volume description"
+        current[2][0] = "LM_4P_WORK_REG[0]"
+        current[2][2] = "Liquid Mud #4-P Tank Input"
+        current[3][0] = "LM_4P_WORK_REG[1]"
+        current[3][2] = "Liquid Mud #4-P Tank Total"
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        bindings = scan_work_register_bindings(baseline, TankRules())
+        plan = tracker.export_plan(current, work_reg_bindings=bindings, work_registers_only=True)
+
+        exported_names = {row[0] for row in plan.second_pass_rows[1:]}
+        self.assertEqual(exported_names, {"LM_4P_WORK_REG[0]", "LM_4P_WORK_REG[1]"})
+        self.assertNotIn("R100", exported_names)
+
 
 class NormalizeWorkRegSkipTests(unittest.TestCase):
     def setUp(self) -> None:
