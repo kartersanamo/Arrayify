@@ -7,6 +7,11 @@ from tank_tools.config import ProjectConfig
 from tank_tools.io import CsvRepository
 from tank_tools.models import ArrayifySummaryRow
 from tank_tools.rules import TankRules
+from tank_tools.work_reg_registry import (
+    WORK_REG_COUNT,
+    _collect_empty_work_register_names,
+    _find_sounding_block_end,
+)
 
 
 class ArrayifyService:
@@ -21,7 +26,6 @@ class ArrayifyService:
         output_path: Path | None = None,
         input_rows: list[list[str]] | None = None,
         write_output: bool = True,
-        keep_other_values: bool = False,
         event_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> list[list[str]] | None:
         print("Array-ify-ing...")
@@ -52,8 +56,7 @@ class ArrayifyService:
         while row_index < len(rows):
             row = rows[row_index]
             if len(row) <= 15 or not self._rules.is_register_name(row[0]):
-                if keep_other_values:
-                    output_rows.append(row.copy())
+                output_rows.append(row.copy())
                 row_index += 1
                 continue
 
@@ -64,14 +67,18 @@ class ArrayifyService:
 
             description_match = self._rules.tank_description_re.match(row[2])
             if not description_match or description_match.group(2) != "0":
-                if keep_other_values:
-                    output_rows.append(row.copy())
+                output_rows.append(row.copy())
                 row_index += 1
                 continue
 
             base_description = description_match.group(1)
             base_register = int(row[0][1:])
-            affiliate_rows = self._collect_affiliate_rows(rows, row_index, base_description)
+            backward_affiliates = self._collect_backward_affiliate_rows(rows, row_index, base_description)
+            forward_affiliates = (
+                None
+                if backward_affiliates is not None
+                else self._collect_forward_affiliate_rows(rows, row_index, base_description)
+            )
 
             block_rows: list[list[str]] = []
             expected_index = 0
@@ -101,8 +108,7 @@ class ArrayifyService:
                 scan_index += 1
 
             if len(block_rows) <= 1:
-                if keep_other_values:
-                    output_rows.append(row.copy())
+                output_rows.append(row.copy())
                 row_index += 1
                 continue
 
@@ -118,8 +124,8 @@ class ArrayifyService:
                 )
             )
 
-            if affiliate_rows is not None:
-                for affiliate_row in affiliate_rows:
+            if backward_affiliates is not None:
+                for affiliate_row in backward_affiliates:
                     output_rows.append(affiliate_row)
 
             output_rows.append(self._build_base_row(block_rows[0], base_description, target_length))
@@ -148,7 +154,12 @@ class ArrayifyService:
                     )
                 )
 
-            row_index = scan_index
+            if forward_affiliates is not None:
+                for work_row in forward_affiliates[1:]:
+                    output_rows.append(work_row)
+                row_index = scan_index + WORK_REG_COUNT
+            else:
+                row_index = scan_index
 
         self._print_summary(summary_rows)
         if write_output:
@@ -160,7 +171,7 @@ class ArrayifyService:
 
         return output_rows
 
-    def _collect_affiliate_rows(
+    def _collect_backward_affiliate_rows(
         self,
         rows: list[list[str]],
         at_index: int,
@@ -170,8 +181,7 @@ class ArrayifyService:
         work_rows: list[list[str]] = []
         scan_index = at_index - 1
 
-        work_reg_count = 4
-        while scan_index >= 1 and len(work_rows) < work_reg_count:
+        while scan_index >= 1 and len(work_rows) < WORK_REG_COUNT:
             current_row = rows[scan_index]
             if not self._is_affiliate_work_row(current_row, tank_label):
                 break
@@ -179,7 +189,7 @@ class ArrayifyService:
             work_rows.insert(0, current_row.copy())
             scan_index -= 1
 
-        if len(work_rows) != work_reg_count:
+        if len(work_rows) != WORK_REG_COUNT:
             return None
 
         volume_index = scan_index
@@ -194,6 +204,45 @@ class ArrayifyService:
             return None
 
         return [volume_row.copy(), *work_rows]
+
+    def _collect_forward_affiliate_rows(
+        self,
+        rows: list[list[str]],
+        at_index: int,
+        base_description: str,
+    ) -> list[list[str]] | None:
+        block_end = _find_sounding_block_end(rows, at_index, base_description, self._rules)
+        if block_end is None:
+            return None
+
+        register_names = _collect_empty_work_register_names(rows, block_end, self._rules)
+        if register_names is None:
+            return None
+
+        volume_row = self._find_volume_row_before_block(rows, at_index, base_description)
+        if volume_row is None:
+            return None
+
+        work_rows = [rows[block_end + offset].copy() for offset in range(WORK_REG_COUNT)]
+        return [volume_row.copy(), *work_rows]
+
+    def _find_volume_row_before_block(
+        self,
+        rows: list[list[str]],
+        block_start: int,
+        base_description: str,
+    ) -> list[str] | None:
+        for row_index in range(block_start - 1, 0, -1):
+            row = rows[row_index]
+            if len(row) <= 2 or not self._rules.is_register_name(row[0]) or "[" in row[0]:
+                continue
+
+            if row[2].strip() != base_description:
+                continue
+
+            return row
+
+        return None
 
     def _is_affiliate_work_row(self, row: list[str], tank_label: str) -> bool:
         if len(row) <= 2:

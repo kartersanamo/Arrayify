@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Callable
 
-from tank_tools.change_tracker import RowChangeTracker
 from tank_tools.config import ProjectConfig
 from tank_tools.io import CsvRepository
 from tank_tools.models import WorkRegMatch, WorkRegMiss
@@ -22,6 +20,7 @@ class TankWorkRegService:
 
     def label_work_registers(
         self,
+        work_reg_bindings: dict[str, list[str]],
         input_path: Path | None = None,
         output_path: Path | None = None,
         input_rows: list[list[str]] | None = None,
@@ -30,18 +29,21 @@ class TankWorkRegService:
         cli_style: bool = True,
         event_callback: Callable[[dict[str, object]], None] | None = None,
         custom_tag_provider: Callable[[str], str | None] | None = None,
-        change_tracker: RowChangeTracker | None = None,
     ) -> list[list[str]] | None:
         print("Labeling work registers....")
 
+        if not work_reg_bindings:
+            print("No work register bindings to apply.")
+            return input_rows
+
         if input_rows is None:
-            source_path = input_path or self._config.input_csv_path
-            if not source_path.is_file():
-                print(f"Input file not found: {source_path}")
+            source_path = input_path or self._find_source_path()
+            if source_path is None or not source_path.is_file():
+                print("No arrayified or sounded CSV found. Run arrayify first.")
                 return None
             rows = self._csv_repository.read_rows(source_path)
             if not rows:
-                print(f"Input file is empty: {source_path}")
+                print(f"Source file is empty: {source_path}")
                 return None
         else:
             rows = input_rows
@@ -67,33 +69,18 @@ class TankWorkRegService:
         missed_rows: list[WorkRegMiss] = []
         labeled_count = 0
 
-        row_index = 1
-        while row_index < len(rows):
-            row = rows[row_index]
-            if len(row) <= 2 or not self._rules.is_register_name(row[0]) or "[" in row[0]:
-                row_index += 1
+        register_lookup = self._build_register_lookup(work_reg_bindings)
+
+        for row in rows[1:]:
+            if len(row) <= 2:
                 continue
 
-            volume_description = row[2].strip()
-            if not self._rules.is_tank_volume_description(volume_description):
-                row_index += 1
+            source_register = row[0].split("[", 1)[0]
+            binding = register_lookup.get(source_register)
+            if binding is None:
                 continue
 
-            work_row_indices = self._collect_work_register_indices(rows, row_index + 1)
-            if work_row_indices is None:
-                print(
-                    f"Skipping work registers for '{volume_description}': "
-                    f"expected {self.WORK_REG_COUNT} consecutive empty register rows."
-                )
-                missed_rows.append(
-                    WorkRegMiss(
-                        volume_description=volume_description,
-                        reason=f"expected {self.WORK_REG_COUNT} empty register rows below volume row",
-                    )
-                )
-                row_index += 1
-                continue
-
+            volume_description, work_index = binding
             prefix = self._resolve_prefix(
                 volume_description,
                 prefix_map,
@@ -108,28 +95,24 @@ class TankWorkRegService:
                         reason="no tag prefix match",
                     )
                 )
-                row_index += 1
                 continue
 
             tank_label = self._rules.tank_label_from_volume_description(volume_description)
-            for offset, work_row_index in enumerate(work_row_indices):
-                work_row = rows[work_row_index]
-                source_register = work_row[0].split("[", 1)[0]
-                tag = self._rules.build_work_reg_tag(prefix, offset)
-                work_description = self._rules.build_work_reg_description(tank_label, offset)
-                work_row[0] = tag
-                work_row[2] = work_description
-                if len(work_row) > 15:
-                    work_row[15] = ""
-                labeled_count += 1
-                matched_rows.append(
-                    WorkRegMatch(
-                        volume_description=volume_description,
-                        register=source_register,
-                        tag=tag,
-                        description=work_description,
-                    )
+            tag = self._rules.build_work_reg_tag(prefix, work_index)
+            work_description = self._rules.build_work_reg_description(tank_label, work_index)
+            row[0] = tag
+            row[2] = work_description
+            if len(row) > 15:
+                row[15] = ""
+            labeled_count += 1
+            matched_rows.append(
+                WorkRegMatch(
+                    volume_description=volume_description,
+                    register=source_register,
+                    tag=tag,
+                    description=work_description,
                 )
+            )
 
             if event_callback is not None:
                 event_callback(
@@ -140,8 +123,6 @@ class TankWorkRegService:
                         "rows": [list(item) for item in rows],
                     }
                 )
-
-            row_index = work_row_indices[-1] + 1
 
         self._print_summary(matched_rows, missed_rows, cli_style)
         if write_output:
@@ -156,50 +137,19 @@ class TankWorkRegService:
 
         return rows
 
-    def _collect_work_register_indices(self, rows: list[list[str]], start_index: int) -> list[int] | None:
-        labeled_indices = self._collect_labeled_work_register_indices(rows, start_index)
-        if labeled_indices is not None:
-            return labeled_indices
+    @staticmethod
+    def _build_register_lookup(
+        work_reg_bindings: dict[str, list[str]],
+    ) -> dict[str, tuple[str, int]]:
+        lookup: dict[str, tuple[str, int]] = {}
+        for volume_description, register_names in work_reg_bindings.items():
+            for index, register_name in enumerate(register_names):
+                lookup[register_name] = (volume_description, index)
+        return lookup
 
-        indices: list[int] = []
-        scan_index = start_index
-
-        while scan_index < len(rows) and len(indices) < self.WORK_REG_COUNT:
-            current_row = rows[scan_index]
-            if len(current_row) <= 2 or not self._rules.is_register_name(current_row[0]) or "[" in current_row[0]:
-                break
-
-            if current_row[2].strip():
-                break
-
-            indices.append(scan_index)
-            scan_index += 1
-
-        if len(indices) != self.WORK_REG_COUNT:
-            return None
-
-        return indices
-
-    def _collect_labeled_work_register_indices(self, rows: list[list[str]], start_index: int) -> list[int] | None:
-        indices: list[int] = []
-        expected_index = 0
-
-        for scan_index in range(start_index, min(start_index + self.WORK_REG_COUNT, len(rows))):
-            current_row = rows[scan_index]
-            if len(current_row) <= 2 or not self._rules.is_work_reg_tag(current_row[0]):
-                return None
-
-            match = re.match(r"^.+_WORK_REG\[(\d+)\]$", current_row[0])
-            if match is None or int(match.group(1)) != expected_index:
-                return None
-
-            indices.append(scan_index)
-            expected_index += 1
-
-        if len(indices) != self.WORK_REG_COUNT:
-            return None
-
-        return indices
+    def _find_source_path(self) -> Path | None:
+        candidates = [self._config.sounded_csv_path, self._config.arrayified_csv_path]
+        return next((path for path in candidates if path.is_file()), None)
 
     def _resolve_prefix(
         self,

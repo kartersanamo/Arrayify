@@ -41,6 +41,7 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime in environm
 from tank_tools.app_identity import APP_TITLE, apply_tk_window_identity, configure_app_identity
 from tank_tools.change_tracker import RowChangeTracker
 from tank_tools.config import ProjectConfig
+from tank_tools.work_reg_registry import scan_work_register_bindings
 from tank_tools.io import CsvRepository
 from tank_tools.rules import TankRules
 from tank_tools.services import (
@@ -110,6 +111,7 @@ class TankManagerApp:
         self._latest_rows: list[list[str]] = []
         self._baseline_rows: list[list[str]] = []
         self._change_tracker: RowChangeTracker | None = None
+        self._work_reg_bindings: dict[str, list[str]] = {}
         self._worker: threading.Thread | None = None
         self._input_loaded = False
         self._docx_valid = False
@@ -118,7 +120,6 @@ class TankManagerApp:
         self.input_var = StringVar(value="")
         self.docx_folder_var = StringVar(value="")
         self.status_var = StringVar(value="Choose an input CSV to begin.")
-        self.keep_other_values_var = BooleanVar(value=False)
 
         self._build_layout()
         self.workflow_var.trace_add("write", self._on_workflow_changed)
@@ -165,14 +166,6 @@ class TankManagerApp:
         self.export_button.pack(side=LEFT, padx=(0, 8))
 
         ttk.Button(button_cluster, text="Clear Logs", command=self._clear_logs).pack(side=LEFT)
-
-        self.keep_other_values_check = ttk.Checkbutton(
-            button_cluster,
-            text="Keep Other Values",
-            variable=self.keep_other_values_var,
-            state="disabled",
-        )
-        self.keep_other_values_check.pack(side=LEFT, padx=(12, 0))
 
         workflow_box = ttk.LabelFrame(action_bar, text="Workflow")
         workflow_box.pack(side=RIGHT, fill=Y)
@@ -285,6 +278,7 @@ class TankManagerApp:
         self._input_loaded = True
         self._baseline_rows = copy.deepcopy(rows)
         self._change_tracker = RowChangeTracker(self._baseline_rows)
+        self._work_reg_bindings = scan_work_register_bindings(rows, self._rules)
         self._latest_rows = rows
         self._refresh_preview(rows)
         self.workflow_var.set("")
@@ -327,8 +321,6 @@ class TankManagerApp:
         workflow_state = "normal" if self._input_loaded else "disabled"
         for radio in self._workflow_radios:
             radio.configure(state=workflow_state)
-
-        self.keep_other_values_check.configure(state=workflow_state)
 
         can_run = self._can_run_workflow()
         self.run_button.configure(state="normal" if can_run else "disabled")
@@ -373,19 +365,13 @@ class TankManagerApp:
                 preview_rows = copy.deepcopy(self._latest_rows)
                 sound_folder = self._paths.docx_folder
                 tag_prefix_path = self._paths.input_file
-                keep_other_values = self.keep_other_values_var.get()
 
                 if workflow == "arrayify":
-                    labeled_rows = self._label_work_registers(preview_rows)
-                    if labeled_rows is None:
-                        rows = None
-                    else:
-                        rows = self._arrayify_service.arrayify_points(
-                            input_rows=labeled_rows,
-                            write_output=False,
-                            keep_other_values=keep_other_values,
-                            event_callback=self._enqueue_event,
-                        )
+                    rows = self._arrayify_service.arrayify_points(
+                        input_rows=preview_rows,
+                        write_output=False,
+                        event_callback=self._enqueue_event,
+                    )
                 elif workflow == "sound":
                     rows = self._sounding_service.sound_tanks(
                         sound_folder=sound_folder,
@@ -395,52 +381,27 @@ class TankManagerApp:
                         event_callback=self._enqueue_event,
                     )
                 elif workflow == "all":
-                    labeled_rows = self._label_work_registers(preview_rows)
-                    if labeled_rows is None:
+                    arrayified = self._arrayify_service.arrayify_points(
+                        input_rows=preview_rows,
+                        write_output=False,
+                        event_callback=self._enqueue_event,
+                    )
+                    if arrayified is None:
                         rows = None
                     else:
-                        arrayified = self._arrayify_service.arrayify_points(
-                            input_rows=labeled_rows,
-                            write_output=False,
-                            keep_other_values=keep_other_values,
-                            event_callback=self._enqueue_event,
-                        )
-                        if arrayified is None:
-                            rows = None
-                        else:
-                            sounded = self._sounding_service.sound_tanks(
-                                sound_folder=sound_folder,
-                                input_rows=arrayified,
-                                write_output=False,
-                                cli_style=False,
-                                event_callback=self._enqueue_event,
-                            )
-                            if sounded is None:
-                                rows = None
-                            else:
-                                rows = self._normalization_service.normalize_tags(
-                                    input_rows=sounded,
-                                    tag_prefix_input_path=tag_prefix_path,
-                                    write_output=False,
-                                    cli_style=False,
-                                    live_preview=False,
-                                    event_callback=self._enqueue_event,
-                                    custom_tag_provider=self._prompt_for_custom_tag,
-                                )
-                else:
-                    labeled_rows = self._label_work_registers(preview_rows)
-                    if labeled_rows is None:
-                        rows = None
-                    else:
-                        rows = self._normalization_service.normalize_tags(
-                            input_rows=labeled_rows,
-                            tag_prefix_input_path=tag_prefix_path,
+                        sounded = self._sounding_service.sound_tanks(
+                            sound_folder=sound_folder,
+                            input_rows=arrayified,
                             write_output=False,
                             cli_style=False,
-                            live_preview=False,
                             event_callback=self._enqueue_event,
-                            custom_tag_provider=self._prompt_for_custom_tag,
                         )
+                        if sounded is None:
+                            rows = None
+                        else:
+                            rows = self._run_normalize_workflow(sounded, tag_prefix_path)
+                else:
+                    rows = self._run_normalize_workflow(preview_rows, tag_prefix_path)
 
                 if rows is not None:
                     self._event_queue.put({"type": "rows", "rows": rows})
@@ -453,12 +414,29 @@ class TankManagerApp:
     def _enqueue_event(self, event: dict[str, object]) -> None:
         self._event_queue.put(event)
 
-    def _label_work_registers(self, rows: list[list[str]]) -> list[list[str]] | None:
-        return self._work_reg_service.label_work_registers(
+    def _run_normalize_workflow(
+        self,
+        rows: list[list[str]],
+        tag_prefix_path: Path | None,
+    ) -> list[list[str]] | None:
+        labeled_rows = self._work_reg_service.label_work_registers(
+            self._work_reg_bindings,
             input_rows=rows,
-            tag_prefix_input_path=self._paths.input_file,
+            tag_prefix_input_path=tag_prefix_path,
             write_output=False,
             cli_style=False,
+            event_callback=self._enqueue_event,
+            custom_tag_provider=self._prompt_for_custom_tag,
+        )
+        if labeled_rows is None:
+            return None
+
+        return self._normalization_service.normalize_tags(
+            input_rows=labeled_rows,
+            tag_prefix_input_path=tag_prefix_path,
+            write_output=False,
+            cli_style=False,
+            live_preview=False,
             event_callback=self._enqueue_event,
             custom_tag_provider=self._prompt_for_custom_tag,
         )
