@@ -39,10 +39,16 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime in environm
     ttk = None
 
 from tank_tools.app_identity import APP_TITLE, apply_tk_window_identity, configure_app_identity
+from tank_tools.change_tracker import RowChangeTracker
 from tank_tools.config import ProjectConfig
 from tank_tools.io import CsvRepository
 from tank_tools.rules import TankRules
-from tank_tools.services import ArrayifyService, TagNormalizationService, TankSoundingService
+from tank_tools.services import (
+    ArrayifyService,
+    TagNormalizationService,
+    TankSoundingService,
+    TankWorkRegService,
+)
 
 from tank_tools.runtime import resource_path
 
@@ -97,10 +103,13 @@ class TankManagerApp:
         self._arrayify_service = ArrayifyService(self._config, self._csv_repository, self._rules)
         self._sounding_service = TankSoundingService(self._config, self._csv_repository, self._rules)
         self._normalization_service = TagNormalizationService(self._config, self._csv_repository, self._rules)
+        self._work_reg_service = TankWorkRegService(self._config, self._csv_repository, self._rules)
 
         self._paths = GuiPaths()
         self._event_queue: queue.Queue[dict[str, object]] = queue.Queue()
         self._latest_rows: list[list[str]] = []
+        self._baseline_rows: list[list[str]] = []
+        self._change_tracker: RowChangeTracker | None = None
         self._worker: threading.Thread | None = None
         self._input_loaded = False
         self._docx_valid = False
@@ -274,6 +283,8 @@ class TankManagerApp:
         self.input_var.set(str(path))
         self._paths.input_file = path
         self._input_loaded = True
+        self._baseline_rows = copy.deepcopy(rows)
+        self._change_tracker = RowChangeTracker(self._baseline_rows)
         self._latest_rows = rows
         self._refresh_preview(rows)
         self.workflow_var.set("")
@@ -365,12 +376,16 @@ class TankManagerApp:
                 keep_other_values = self.keep_other_values_var.get()
 
                 if workflow == "arrayify":
-                    rows = self._arrayify_service.arrayify_points(
-                        input_rows=preview_rows,
-                        write_output=False,
-                        keep_other_values=keep_other_values,
-                        event_callback=self._enqueue_event,
-                    )
+                    labeled_rows = self._label_work_registers(preview_rows)
+                    if labeled_rows is None:
+                        rows = None
+                    else:
+                        rows = self._arrayify_service.arrayify_points(
+                            input_rows=labeled_rows,
+                            write_output=False,
+                            keep_other_values=keep_other_values,
+                            event_callback=self._enqueue_event,
+                        )
                 elif workflow == "sound":
                     rows = self._sounding_service.sound_tanks(
                         sound_folder=sound_folder,
@@ -380,44 +395,52 @@ class TankManagerApp:
                         event_callback=self._enqueue_event,
                     )
                 elif workflow == "all":
-                    arrayified = self._arrayify_service.arrayify_points(
-                        input_rows=preview_rows,
-                        write_output=False,
-                        keep_other_values=keep_other_values,
-                        event_callback=self._enqueue_event,
-                    )
-                    if arrayified is None:
+                    labeled_rows = self._label_work_registers(preview_rows)
+                    if labeled_rows is None:
                         rows = None
                     else:
-                        sounded = self._sounding_service.sound_tanks(
-                            sound_folder=sound_folder,
-                            input_rows=arrayified,
+                        arrayified = self._arrayify_service.arrayify_points(
+                            input_rows=labeled_rows,
                             write_output=False,
-                            cli_style=False,
+                            keep_other_values=keep_other_values,
                             event_callback=self._enqueue_event,
                         )
-                        if sounded is None:
+                        if arrayified is None:
                             rows = None
                         else:
-                            rows = self._normalization_service.normalize_tags(
-                                input_rows=sounded,
-                                tag_prefix_input_path=tag_prefix_path,
+                            sounded = self._sounding_service.sound_tanks(
+                                sound_folder=sound_folder,
+                                input_rows=arrayified,
                                 write_output=False,
                                 cli_style=False,
-                                live_preview=False,
                                 event_callback=self._enqueue_event,
-                                custom_tag_provider=self._prompt_for_custom_tag,
                             )
+                            if sounded is None:
+                                rows = None
+                            else:
+                                rows = self._normalization_service.normalize_tags(
+                                    input_rows=sounded,
+                                    tag_prefix_input_path=tag_prefix_path,
+                                    write_output=False,
+                                    cli_style=False,
+                                    live_preview=False,
+                                    event_callback=self._enqueue_event,
+                                    custom_tag_provider=self._prompt_for_custom_tag,
+                                )
                 else:
-                    rows = self._normalization_service.normalize_tags(
-                        input_rows=preview_rows,
-                        tag_prefix_input_path=tag_prefix_path,
-                        write_output=False,
-                        cli_style=False,
-                        live_preview=False,
-                        event_callback=self._enqueue_event,
-                        custom_tag_provider=self._prompt_for_custom_tag,
-                    )
+                    labeled_rows = self._label_work_registers(preview_rows)
+                    if labeled_rows is None:
+                        rows = None
+                    else:
+                        rows = self._normalization_service.normalize_tags(
+                            input_rows=labeled_rows,
+                            tag_prefix_input_path=tag_prefix_path,
+                            write_output=False,
+                            cli_style=False,
+                            live_preview=False,
+                            event_callback=self._enqueue_event,
+                            custom_tag_provider=self._prompt_for_custom_tag,
+                        )
 
                 if rows is not None:
                     self._event_queue.put({"type": "rows", "rows": rows})
@@ -429,6 +452,16 @@ class TankManagerApp:
 
     def _enqueue_event(self, event: dict[str, object]) -> None:
         self._event_queue.put(event)
+
+    def _label_work_registers(self, rows: list[list[str]]) -> list[list[str]] | None:
+        return self._work_reg_service.label_work_registers(
+            input_rows=rows,
+            tag_prefix_input_path=self._paths.input_file,
+            write_output=False,
+            cli_style=False,
+            event_callback=self._enqueue_event,
+            custom_tag_provider=self._prompt_for_custom_tag,
+        )
 
     def _prompt_for_custom_tag(self, description: str) -> str | None:
         result: dict[str, str | None] = {"value": None}
@@ -633,8 +666,18 @@ class TankManagerApp:
             messagebox.showinfo("Nothing to export", "Load a CSV or run a workflow so there is something to export.")
             return
 
+        if self._change_tracker is None:
+            messagebox.showinfo("Nothing to export", "Load a CSV before exporting modified rows.")
+            return
+
+        export_rows = self._change_tracker.rows_for_export(self._latest_rows)
+        modified_count = max(0, len(export_rows) - 1)
+        if modified_count == 0:
+            messagebox.showinfo("Nothing to export", "No rows were modified from the loaded CSV.")
+            return
+
         selected = filedialog.asksaveasfilename(
-            title="Export live row preview",
+            title="Export modified rows",
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )
@@ -644,6 +687,6 @@ class TankManagerApp:
         export_path = Path(selected)
         with export_path.open("w", newline="") as output_file:
             writer = csv.writer(output_file, dialect="excel")
-            writer.writerows(self._latest_rows)
+            writer.writerows(export_rows)
 
-        self.status_var.set(f"Exported to {export_path}")
+        self.status_var.set(f"Exported {modified_count} modified rows to {export_path}")

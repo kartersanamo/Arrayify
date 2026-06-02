@@ -57,6 +57,11 @@ class ArrayifyService:
                 row_index += 1
                 continue
 
+            if self._rules.is_work_reg_tag(row[0]):
+                output_rows.append(row.copy())
+                row_index += 1
+                continue
+
             description_match = self._rules.tank_description_re.match(row[2])
             if not description_match or description_match.group(2) != "0":
                 if keep_other_values:
@@ -66,6 +71,7 @@ class ArrayifyService:
 
             base_description = description_match.group(1)
             base_register = int(row[0][1:])
+            affiliate_rows = self._collect_affiliate_rows(rows, row_index, base_description)
 
             block_rows: list[list[str]] = []
             expected_index = 0
@@ -112,6 +118,10 @@ class ArrayifyService:
                 )
             )
 
+            if affiliate_rows is not None:
+                for affiliate_row in affiliate_rows:
+                    output_rows.append(affiliate_row)
+
             output_rows.append(self._build_base_row(block_rows[0], base_description, target_length))
 
             if event_callback is not None:
@@ -149,6 +159,59 @@ class ArrayifyService:
             event_callback({"type": "completed", "workflow": "arrayify", "rows": output_rows.copy()})
 
         return output_rows
+
+    def _collect_affiliate_rows(
+        self,
+        rows: list[list[str]],
+        at_index: int,
+        base_description: str,
+    ) -> list[list[str]] | None:
+        tank_label = self._rules.tank_label_from_volume_description(base_description)
+        work_rows: list[list[str]] = []
+        scan_index = at_index - 1
+
+        work_reg_count = 4
+        while scan_index >= 1 and len(work_rows) < work_reg_count:
+            current_row = rows[scan_index]
+            if not self._is_affiliate_work_row(current_row, tank_label):
+                break
+
+            work_rows.insert(0, current_row.copy())
+            scan_index -= 1
+
+        if len(work_rows) != work_reg_count:
+            return None
+
+        volume_index = scan_index
+        if volume_index < 1:
+            return None
+
+        volume_row = rows[volume_index]
+        if len(volume_row) <= 2 or volume_row[2].strip() != base_description:
+            return None
+
+        if not self._rules.is_register_name(volume_row[0]) or "[" in volume_row[0]:
+            return None
+
+        return [volume_row.copy(), *work_rows]
+
+    def _is_affiliate_work_row(self, row: list[str], tank_label: str) -> bool:
+        if len(row) <= 2:
+            return False
+
+        name = row[0]
+        description = row[2].strip()
+
+        if self._rules.is_work_reg_tag(name):
+            return True
+
+        if not self._rules.is_register_name(name) or "[" in name:
+            return False
+
+        if not description:
+            return True
+
+        return description.startswith(f"{tank_label} Tank ")
 
     def _build_array_row(
         self,

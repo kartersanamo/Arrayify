@@ -36,3 +36,17 @@ class NormalizeMatch:
 class NormalizeMiss:
     register: str
     description: str
+
+
+@dataclass(frozen=True)
+class WorkRegMatch:
+    volume_description: str
+    register: str
+    tag: str
+    description: str
+
+
+@dataclass(frozen=True)
+class WorkRegMiss:
+    volume_description: str
+    reason: str

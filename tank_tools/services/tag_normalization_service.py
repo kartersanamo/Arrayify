@@ -76,6 +76,9 @@ class TagNormalizationService:
             if not description:
                 continue
 
+            if self._rules.is_work_reg_tag(row[0]):
+                continue
+
             if self._rules.is_register_name(row[0]) or self._rules.register_array_name_re.match(row[0]):
                 normalized_name = self._rules.normalize_tag_name(row, prefix_map, custom_tag_map)
                 if normalized_name is None:

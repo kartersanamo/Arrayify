@@ -5,11 +5,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+WORK_REG_SUFFIXES: tuple[str, ...] = ("Tank Input", "Tank Total", "Tank Increment", "Tank Output")
+
+
 @dataclass
 class TankRules:
     register_name_re: re.Pattern[str] = field(default=re.compile(r"^R(\d+)$"), init=False)
     tank_description_re: re.Pattern[str] = field(default=re.compile(r"^(.*) @ (\d+)$"), init=False)
     register_array_name_re: re.Pattern[str] = field(default=re.compile(r"^R(\d+)\[(\d+)\]$"), init=False)
+    work_reg_tag_re: re.Pattern[str] = field(default=re.compile(r"^.+_WORK_REG\[\d+\]$"), init=False)
     table_title_re: re.Pattern[str] = field(default=re.compile(r"^Tank Soundings for (.+?) containing "), init=False)
     tag_prefix_overrides: dict[str, str | None] = field(
         default_factory=lambda: {
@@ -40,6 +44,91 @@ class TankRules:
 
     def is_register_name(self, value: str) -> bool:
         return bool(self.register_name_re.match(value or ""))
+
+    def is_work_reg_tag(self, value: str) -> bool:
+        return bool(self.work_reg_tag_re.match(value or ""))
+
+    @staticmethod
+    def is_tank_volume_description(description: str) -> bool:
+        stripped = description.strip()
+        return stripped.endswith(" Tank Volume") or stripped.endswith(" Volume")
+
+    @staticmethod
+    def tank_label_from_volume_description(description: str) -> str:
+        stripped = description.strip()
+        if stripped.endswith(" Tank Volume"):
+            return stripped[: -len(" Tank Volume")]
+        if stripped.endswith(" Volume"):
+            return stripped[: -len(" Volume")]
+        return stripped
+
+    @staticmethod
+    def build_work_reg_tag(prefix: str, index: int) -> str:
+        return f"{prefix}_WORK_REG[{index}]"
+
+    @staticmethod
+    def build_work_reg_description(tank_label: str, index: int) -> str:
+        return f"{tank_label} {WORK_REG_SUFFIXES[index]}"
+
+    @staticmethod
+    def format_custom_work_reg_prefix(custom_tag: str) -> str | None:
+        normalized_custom_tag = re.sub(r"[\s-]+", "_", custom_tag.strip())
+        if not normalized_custom_tag:
+            return None
+
+        for suffix in ("_WORK_REG", "_TANK_TABLE", "_TABLE", "_TANK", "_LEVEL"):
+            if normalized_custom_tag.endswith(suffix):
+                normalized_custom_tag = normalized_custom_tag[: -len(suffix)]
+
+        return normalized_custom_tag or None
+
+    def volume_description_to_work_reg_prefix(
+        self,
+        description: str,
+        prefix_map: dict[str, str],
+    ) -> str | None:
+        if description in self.tag_prefix_overrides:
+            override = self.tag_prefix_overrides[description]
+            if override is not None:
+                return override
+
+        prefix = prefix_map.get(self.canonicalize_tank_description(description))
+        if prefix is not None:
+            return prefix
+
+        return self._parse_volume_description_prefix(description)
+
+    @staticmethod
+    def _parse_volume_description_prefix(description: str) -> str | None:
+        fuel_match = re.match(r"^Fuel Oil #(\d+)-([PSC]) Tank Volume$", description)
+        if fuel_match:
+            return f"FO_{fuel_match.group(1)}{fuel_match.group(2)}"
+
+        if description == "Fuel Oil Day-S Tank Volume":
+            return "FO_DAY_S"
+        if description == "Fuel Oil Day-P Tank Volume":
+            return "FO_DAY_P"
+
+        lm_match = re.match(r"^Liquid Mud #(\d+)-([PS]) Tank Volume$", description)
+        if lm_match:
+            return f"LM_{lm_match.group(1)}{lm_match.group(2)}"
+
+        meth_match = re.match(r"^Methanol #(\d+)-([PS]) Tank Volume$", description)
+        if meth_match:
+            return f"METH_{meth_match.group(1)}{meth_match.group(2)}"
+
+        pot_match = re.match(r"^Potable Water-([PS]) Tank Volume$", description)
+        if pot_match:
+            return f"POTWATER_{pot_match.group(1)}"
+
+        if description == "Sewage Tank Volume":
+            return "SEWAGE"
+
+        ballast_numbered = re.match(r"^Ballast #(\d+)([PSC])-([WC]) Tank Volume$", description)
+        if ballast_numbered:
+            return f"BS_{ballast_numbered.group(1)}{ballast_numbered.group(2)}"
+
+        return None
 
     @staticmethod
     def default_initial_value(data_type: str) -> str:
