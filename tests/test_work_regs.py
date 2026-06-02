@@ -218,6 +218,50 @@ class RowChangeTrackerTests(unittest.TestCase):
         self.assertFalse(plan.needs_dual_export)
         self.assertEqual(plan.first_pass_rows, plan.second_pass_rows)
 
+    def test_first_pass_restores_io_for_arrayify_rename(self) -> None:
+        baseline = build_lm4p_block()
+        baseline[6][15] = "%R00105"
+        current = copy.deepcopy(baseline)
+        current[6][0] = "R105[0]"
+        current[6][2] = "Liquid Mud #4-P Tank Volume @ 0"
+        current[6][15] = "%R00200"
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        plan = tracker.export_plan(current)
+
+        self.assertTrue(plan.needs_dual_export)
+        self.assertEqual(plan.first_pass_rows[1][0], "R105[0]")
+        self.assertEqual(plan.first_pass_rows[1][15], "%R00105")
+        self.assertEqual(plan.second_pass_rows[1][15], "%R00200")
+
+    def test_first_pass_keeps_original_io_when_arrayify_clears_io(self) -> None:
+        baseline = build_lm4p_block()
+        baseline[6][15] = "%R00105"
+        current = copy.deepcopy(baseline)
+        current[6][0] = "LM_4P_TANK_TABLE[0]"
+        current[6][2] = "Liquid Mud #4-P Tank Volume @ 0"
+        current[6][15] = ""
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        plan = tracker.export_plan(current)
+
+        self.assertTrue(plan.needs_dual_export)
+        self.assertEqual(plan.first_pass_rows[1][0], "LM_4P_TANK_TABLE[0]")
+        self.assertEqual(plan.first_pass_rows[1][15], "%R00105")
+        self.assertEqual(plan.second_pass_rows[1][15], "")
+
+    def test_io_only_change_does_not_restore_baseline_io(self) -> None:
+        baseline = build_lm4p_block()
+        current = copy.deepcopy(baseline)
+        current[1][15] = "%R99999"
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        plan = tracker.export_plan(current)
+
+        self.assertFalse(plan.needs_dual_export)
+        self.assertEqual(plan.first_pass_rows[1][15], "%R99999")
+        self.assertEqual(plan.first_pass_rows, plan.second_pass_rows)
+
 
 class NormalizeWorkRegSkipTests(unittest.TestCase):
     def setUp(self) -> None:

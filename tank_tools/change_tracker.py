@@ -50,6 +50,7 @@ class RowChangeTracker:
 
         baseline_by_name = self._index_baseline_rows()
         baseline_by_io = self._index_baseline_by_io()
+        baseline_by_sounding = self._index_baseline_by_sounding_key(rules)
         current_names = {self._cell(row, NAME_COLUMN) for row in current_rows[1:] if row}
         renamed_baseline_by_signature = self._index_renamed_baseline_candidates(current_names)
         used_baseline_names: set[str] = set()
@@ -62,6 +63,7 @@ class RowChangeTracker:
                 current_row,
                 baseline_by_name,
                 baseline_by_io,
+                baseline_by_sounding,
                 renamed_baseline_by_signature,
                 used_baseline_names,
                 work_reg_bindings,
@@ -77,13 +79,17 @@ class RowChangeTracker:
             if not self._rows_differ(current_row, baseline_row):
                 continue
 
-            second_pass_rows.append(self._copy_row(current_row))
+            second_row = self._copy_row(current_row)
+            second_pass_rows.append(second_row)
 
-            if self._needs_dual_export_pair(baseline_row, current_row):
-                needs_dual_export = True
-                first_pass_rows.append(self._build_first_pass_row(baseline_row, current_row))
+            if self._should_restore_baseline_io(baseline_row, current_row):
+                first_row = self._build_first_pass_row(baseline_row, current_row)
             else:
-                first_pass_rows.append(self._copy_row(current_row))
+                first_row = self._copy_row(current_row)
+
+            first_pass_rows.append(first_row)
+            if self._rows_differ(first_row, second_row):
+                needs_dual_export = True
 
         return ExportPlan(
             first_pass_rows=[header, *first_pass_rows],
@@ -112,6 +118,7 @@ class RowChangeTracker:
         current_row: list[str],
         baseline_by_name: dict[str, list[str]],
         baseline_by_io: dict[str, list[str]],
+        baseline_by_sounding: dict[tuple[str, int], list[str]],
         renamed_baseline_by_signature: dict[tuple[str, ...], list[list[str]]],
         used_baseline_names: set[str],
         work_reg_bindings: dict[str, list[str]] | None,
@@ -129,6 +136,19 @@ class RowChangeTracker:
             used_baseline_names,
             work_reg_bindings,
             prefix_map,
+            rules,
+        )
+        if baseline_row is not None:
+            return baseline_row
+
+        baseline_row = self._resolve_from_array_register(current_name, baseline_by_name, used_baseline_names)
+        if baseline_row is not None:
+            return baseline_row
+
+        baseline_row = self._resolve_from_sounding_description(
+            current_row,
+            baseline_by_sounding,
+            used_baseline_names,
             rules,
         )
         if baseline_row is not None:
@@ -158,6 +178,53 @@ class RowChangeTracker:
 
         baseline_row = candidates[0]
         used_baseline_names.add(self._cell(baseline_row, NAME_COLUMN))
+        return baseline_row
+
+    @staticmethod
+    def _resolve_from_array_register(
+        current_name: str,
+        baseline_by_name: dict[str, list[str]],
+        used_baseline_names: set[str],
+    ) -> list[str] | None:
+        match = re.match(r"^R(\d+)\[(\d+)\]$", current_name)
+        if match is None:
+            return None
+
+        source_register = f"R{int(match.group(1)) + int(match.group(2))}"
+        if source_register in used_baseline_names:
+            return None
+
+        baseline_row = baseline_by_name.get(source_register)
+        if baseline_row is None:
+            return None
+
+        used_baseline_names.add(source_register)
+        return baseline_row
+
+    @staticmethod
+    def _resolve_from_sounding_description(
+        current_row: list[str],
+        baseline_by_sounding: dict[tuple[str, int], list[str]],
+        used_baseline_names: set[str],
+        rules: TankRules,
+    ) -> list[str] | None:
+        if len(current_row) <= 2:
+            return None
+
+        description_match = rules.tank_description_re.match(current_row[2])
+        if description_match is None:
+            return None
+
+        sounding_key = (description_match.group(1), int(description_match.group(2)))
+        baseline_row = baseline_by_sounding.get(sounding_key)
+        if baseline_row is None:
+            return None
+
+        baseline_name = RowChangeTracker._cell(baseline_row, NAME_COLUMN)
+        if baseline_name in used_baseline_names:
+            return None
+
+        used_baseline_names.add(baseline_name)
         return baseline_row
 
     @staticmethod
@@ -202,6 +269,21 @@ class RowChangeTracker:
 
         return None
 
+    def _index_baseline_by_sounding_key(self, rules: TankRules) -> dict[tuple[str, int], list[str]]:
+        indexed: dict[tuple[str, int], list[str]] = {}
+        for row in self.baseline_rows[1:]:
+            if len(row) <= 2:
+                continue
+
+            description_match = rules.tank_description_re.match(row[2])
+            if description_match is None:
+                continue
+
+            key = (description_match.group(1), int(description_match.group(2)))
+            indexed[key] = row
+
+        return indexed
+
     def _index_renamed_baseline_candidates(
         self,
         current_names: set[str],
@@ -237,12 +319,14 @@ class RowChangeTracker:
         return f"R{match.group(1)}"
 
     @staticmethod
-    def _needs_dual_export_pair(baseline_row: list[str], current_row: list[str]) -> bool:
+    def _should_restore_baseline_io(baseline_row: list[str], current_row: list[str]) -> bool:
         name_changed = RowChangeTracker._cell(baseline_row, NAME_COLUMN) != RowChangeTracker._cell(
             current_row, NAME_COLUMN
         )
         io_changed = RowChangeTracker._io_value(baseline_row) != RowChangeTracker._io_value(current_row)
-        return name_changed and io_changed
+        if not name_changed and io_changed:
+            return False
+        return True
 
     @staticmethod
     def _build_first_pass_row(baseline_row: list[str], current_row: list[str]) -> list[str]:
