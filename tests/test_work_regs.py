@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tank_tools.change_tracker import RowChangeTracker
+from tank_tools.change_tracker import ExportPlan, RowChangeTracker
 from tank_tools.config import ProjectConfig
 from tank_tools.io import CsvRepository
 from tank_tools.rules import TankRules
@@ -194,12 +194,18 @@ class RowChangeTrackerTests(unittest.TestCase):
         current[2][15] = ""
 
         tracker = RowChangeTracker(copy.deepcopy(baseline))
-        plan = tracker.export_plan(current)
+        bindings = scan_work_register_bindings(baseline, TankRules())
+        plan = tracker.export_plan(current, work_reg_bindings=bindings)
 
         self.assertTrue(plan.needs_dual_export)
-        self.assertEqual(plan.match_pass_rows[1][0], "LM_4P_WORK_REG[0]")
-        self.assertEqual(plan.match_pass_rows[1][15], "%R00101")
-        self.assertEqual(plan.final_rows[1][15], "")
+        self.assertEqual(plan.first_pass_rows[1][0], "LM_4P_WORK_REG[0]")
+        self.assertEqual(plan.first_pass_rows[1][15], "%R00101")
+        self.assertEqual(plan.second_pass_rows[1][15], "")
+
+    def test_dual_export_paths(self) -> None:
+        first_path, second_path = ExportPlan.export_paths(Path("/tmp/export.csv"))
+        self.assertEqual(first_path.name, "export-FIRST.csv")
+        self.assertEqual(second_path.name, "export-SECOND.csv")
 
     def test_single_export_when_only_description_changes(self) -> None:
         baseline = build_lm4p_block()
@@ -210,7 +216,7 @@ class RowChangeTrackerTests(unittest.TestCase):
         plan = tracker.export_plan(current)
 
         self.assertFalse(plan.needs_dual_export)
-        self.assertEqual(plan.match_pass_rows, plan.final_rows)
+        self.assertEqual(plan.first_pass_rows, plan.second_pass_rows)
 
 
 class NormalizeWorkRegSkipTests(unittest.TestCase):

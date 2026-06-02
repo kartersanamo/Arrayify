@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
+
+from tank_tools.rules import TankRules
 
 NAME_COLUMN = 0
 IOADDRESS_COLUMN = 15
@@ -8,29 +12,44 @@ IOADDRESS_COLUMN = 15
 
 @dataclass(frozen=True)
 class ExportPlan:
-    match_pass_rows: list[list[str]]
-    final_rows: list[list[str]]
+    first_pass_rows: list[list[str]]
+    second_pass_rows: list[list[str]]
     needs_dual_export: bool
 
     @property
     def modified_row_count(self) -> int:
-        return max(0, len(self.final_rows) - 1)
+        return max(0, len(self.second_pass_rows) - 1)
+
+    @staticmethod
+    def export_paths(selected_path: Path) -> tuple[Path, Path]:
+        return (
+            selected_path.with_name(f"{selected_path.stem}-FIRST{selected_path.suffix}"),
+            selected_path.with_name(f"{selected_path.stem}-SECOND{selected_path.suffix}"),
+        )
 
 
 @dataclass
 class RowChangeTracker:
     baseline_rows: list[list[str]]
+    rules: TankRules | None = None
 
-    def export_plan(self, current_rows: list[list[str]]) -> ExportPlan:
+    def export_plan(
+        self,
+        current_rows: list[list[str]],
+        work_reg_bindings: dict[str, list[str]] | None = None,
+        prefix_map: dict[str, str] | None = None,
+    ) -> ExportPlan:
         if not current_rows:
-            return ExportPlan(match_pass_rows=[], final_rows=[], needs_dual_export=False)
+            return ExportPlan(first_pass_rows=[], second_pass_rows=[], needs_dual_export=False)
 
+        rules = self.rules or TankRules()
         header = current_rows[0]
-        match_pass_rows: list[list[str]] = []
-        final_rows: list[list[str]] = []
+        first_pass_rows: list[list[str]] = []
+        second_pass_rows: list[list[str]] = []
         needs_dual_export = False
 
         baseline_by_name = self._index_baseline_rows()
+        baseline_by_io = self._index_baseline_by_io()
         current_names = {self._cell(row, NAME_COLUMN) for row in current_rows[1:] if row}
         renamed_baseline_by_signature = self._index_renamed_baseline_candidates(current_names)
         used_baseline_names: set[str] = set()
@@ -42,49 +61,91 @@ class RowChangeTracker:
             baseline_row = self._resolve_baseline_row(
                 current_row,
                 baseline_by_name,
+                baseline_by_io,
                 renamed_baseline_by_signature,
                 used_baseline_names,
+                work_reg_bindings,
+                prefix_map or {},
+                rules,
             )
             if baseline_row is None:
                 copied_row = self._copy_row(current_row)
-                match_pass_rows.append(copied_row)
-                final_rows.append(self._copy_row(current_row))
+                first_pass_rows.append(copied_row)
+                second_pass_rows.append(self._copy_row(current_row))
                 continue
 
             if not self._rows_differ(current_row, baseline_row):
                 continue
 
-            final_rows.append(self._copy_row(current_row))
+            second_pass_rows.append(self._copy_row(current_row))
 
             if self._needs_dual_export_pair(baseline_row, current_row):
                 needs_dual_export = True
-                match_pass_rows.append(self._build_match_pass_row(baseline_row, current_row))
+                first_pass_rows.append(self._build_first_pass_row(baseline_row, current_row))
             else:
-                match_pass_rows.append(self._copy_row(current_row))
+                first_pass_rows.append(self._copy_row(current_row))
 
         return ExportPlan(
-            match_pass_rows=[header, *match_pass_rows],
-            final_rows=[header, *final_rows],
+            first_pass_rows=[header, *first_pass_rows],
+            second_pass_rows=[header, *second_pass_rows],
             needs_dual_export=needs_dual_export,
         )
 
-    def rows_for_export(self, current_rows: list[list[str]]) -> list[list[str]]:
-        return self.export_plan(current_rows).final_rows
+    def rows_for_export(
+        self,
+        current_rows: list[list[str]],
+        work_reg_bindings: dict[str, list[str]] | None = None,
+        prefix_map: dict[str, str] | None = None,
+    ) -> list[list[str]]:
+        return self.export_plan(current_rows, work_reg_bindings, prefix_map).second_pass_rows
 
-    def modified_row_count(self, current_rows: list[list[str]]) -> int:
-        return self.export_plan(current_rows).modified_row_count
+    def modified_row_count(
+        self,
+        current_rows: list[list[str]],
+        work_reg_bindings: dict[str, list[str]] | None = None,
+        prefix_map: dict[str, str] | None = None,
+    ) -> int:
+        return self.export_plan(current_rows, work_reg_bindings, prefix_map).modified_row_count
 
     def _resolve_baseline_row(
         self,
         current_row: list[str],
         baseline_by_name: dict[str, list[str]],
+        baseline_by_io: dict[str, list[str]],
         renamed_baseline_by_signature: dict[tuple[str, ...], list[list[str]]],
         used_baseline_names: set[str],
+        work_reg_bindings: dict[str, list[str]] | None,
+        prefix_map: dict[str, str],
+        rules: TankRules,
     ) -> list[str] | None:
         current_name = self._cell(current_row, NAME_COLUMN)
         baseline_row = baseline_by_name.get(current_name)
         if baseline_row is not None:
             return baseline_row
+
+        baseline_row = self._resolve_from_work_reg_bindings(
+            current_name,
+            baseline_by_name,
+            used_baseline_names,
+            work_reg_bindings,
+            prefix_map,
+            rules,
+        )
+        if baseline_row is not None:
+            return baseline_row
+
+        current_io = self._io_value(current_row)
+        if current_io:
+            baseline_row = baseline_by_io.get(current_io)
+            if baseline_row is not None:
+                return baseline_row
+
+        register_from_io = self._register_from_io(current_io)
+        if register_from_io is not None:
+            baseline_row = baseline_by_name.get(register_from_io)
+            if baseline_row is not None and register_from_io not in used_baseline_names:
+                used_baseline_names.add(register_from_io)
+                return baseline_row
 
         current_signature = self._row_signature(current_row)
         candidates = [
@@ -98,6 +159,48 @@ class RowChangeTracker:
         baseline_row = candidates[0]
         used_baseline_names.add(self._cell(baseline_row, NAME_COLUMN))
         return baseline_row
+
+    @staticmethod
+    def _resolve_from_work_reg_bindings(
+        current_name: str,
+        baseline_by_name: dict[str, list[str]],
+        used_baseline_names: set[str],
+        work_reg_bindings: dict[str, list[str]] | None,
+        prefix_map: dict[str, str],
+        rules: TankRules,
+    ) -> list[str] | None:
+        if not work_reg_bindings or not rules.is_work_reg_tag(current_name):
+            return None
+
+        match = re.match(r"^.+_WORK_REG\[(\d+)\]$", current_name)
+        if match is None:
+            return None
+
+        work_index = int(match.group(1))
+        for volume_description, register_names in work_reg_bindings.items():
+            if work_index >= len(register_names):
+                continue
+
+            prefix = rules.volume_description_to_work_reg_prefix(volume_description, prefix_map)
+            if prefix is None:
+                continue
+
+            expected_name = rules.build_work_reg_tag(prefix, work_index)
+            if expected_name != current_name:
+                continue
+
+            source_register = register_names[work_index]
+            if source_register in used_baseline_names:
+                return None
+
+            baseline_row = baseline_by_name.get(source_register)
+            if baseline_row is None:
+                return None
+
+            used_baseline_names.add(source_register)
+            return baseline_row
+
+        return None
 
     def _index_renamed_baseline_candidates(
         self,
@@ -116,6 +219,23 @@ class RowChangeTracker:
 
         return signature_index
 
+    def _index_baseline_by_io(self) -> dict[str, list[str]]:
+        indexed: dict[str, list[str]] = {}
+        for row in self.baseline_rows[1:]:
+            if not row:
+                continue
+            io_value = self._io_value(row)
+            if io_value:
+                indexed[io_value] = row
+        return indexed
+
+    @staticmethod
+    def _register_from_io(io_value: str) -> str | None:
+        match = re.match(r"^%R0*(\d+)$", io_value.strip(), re.IGNORECASE)
+        if match is None:
+            return None
+        return f"R{match.group(1)}"
+
     @staticmethod
     def _needs_dual_export_pair(baseline_row: list[str], current_row: list[str]) -> bool:
         name_changed = RowChangeTracker._cell(baseline_row, NAME_COLUMN) != RowChangeTracker._cell(
@@ -125,7 +245,7 @@ class RowChangeTracker:
         return name_changed and io_changed
 
     @staticmethod
-    def _build_match_pass_row(baseline_row: list[str], current_row: list[str]) -> list[str]:
+    def _build_first_pass_row(baseline_row: list[str], current_row: list[str]) -> list[str]:
         row = RowChangeTracker._copy_row(current_row)
         row[IOADDRESS_COLUMN] = RowChangeTracker._io_value(baseline_row)
         return row

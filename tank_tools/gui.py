@@ -677,10 +677,18 @@ class TankManagerApp:
 
         export_rows = copy.deepcopy(self._latest_rows)
         change_tracker = self._change_tracker
+        work_reg_bindings = copy.deepcopy(self._work_reg_bindings)
+        prefix_map: dict[str, str] = {}
+        if self._paths.input_file is not None and self._paths.input_file.is_file():
+            prefix_map = self._rules.load_tag_prefix_map(self._csv_repository.read_rows(self._paths.input_file))
 
         def prepare_export() -> None:
             try:
-                export_plan = change_tracker.export_plan(export_rows)
+                export_plan = change_tracker.export_plan(
+                    export_rows,
+                    work_reg_bindings=work_reg_bindings,
+                    prefix_map=prefix_map,
+                )
                 self._event_queue.put({"type": "export_ready", "plan": export_plan})
             except Exception as exc:  # pragma: no cover - surfaced in GUI
                 self._event_queue.put({"type": "export_error", "message": str(exc)})
@@ -695,30 +703,32 @@ class TankManagerApp:
             return
 
         selected = filedialog.asksaveasfilename(
-            title="Export modified rows (final)",
+            title="Export modified rows",
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )
         if not selected:
             return
 
-        final_path = Path(selected)
-        self._write_export_rows(final_path, export_plan.final_rows)
+        selected_path = Path(selected)
 
         if export_plan.needs_dual_export:
-            match_path = final_path.with_name(f"{final_path.stem}_match{final_path.suffix}")
-            self._write_export_rows(match_path, export_plan.match_pass_rows)
+            first_path, second_path = ExportPlan.export_paths(selected_path)
+            self._write_export_rows(first_path, export_plan.first_pass_rows)
+            self._write_export_rows(second_path, export_plan.second_pass_rows)
             self.status_var.set(
                 f"Exported {export_plan.modified_row_count} modified rows to "
-                f"{match_path.name} (match pass) and {final_path.name} (final)."
+                f"{first_path.name} and {second_path.name}."
             )
             self._append_log(
-                f"Dual export complete: {match_path} keeps original IO addresses for import matching; "
-                f"{final_path} is the final version.\n",
+                f"Dual export complete:\n"
+                f"- {first_path.name}: updated rows with original IO addresses for import matching\n"
+                f"- {second_path.name}: final live preview values\n",
                 level="success",
             )
         else:
-            self.status_var.set(f"Exported {export_plan.modified_row_count} modified rows to {final_path}")
+            self._write_export_rows(selected_path, export_plan.second_pass_rows)
+            self.status_var.set(f"Exported {export_plan.modified_row_count} modified rows to {selected_path}")
 
     @staticmethod
     def _write_export_rows(export_path: Path, rows: list[list[str]]) -> None:
