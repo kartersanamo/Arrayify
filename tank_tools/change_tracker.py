@@ -149,6 +149,17 @@ class RowChangeTracker:
             if not self._rows_differ(current_row, baseline_row):
                 continue
 
+            current_name = self._cell(current_row, NAME_COLUMN)
+            if rules.is_work_reg_tag(current_name):
+                second_pass_rows.append(self._work_reg_byname_pass_row(current_row))
+                if self._io_value(baseline_row):
+                    first_pass_rows.append(self._work_reg_byref_pass_row(current_row, baseline_row))
+                else:
+                    first_pass_rows.append(self._copy_row(current_row))
+                if self._rows_differ(first_pass_rows[-1], second_pass_rows[-1]):
+                    needs_dual_export = True
+                continue
+
             if synthetic_parent_row is not None:
                 first_pass_rows.append(self._copy_row(synthetic_parent_row))
                 second_pass_rows.append(self._copy_row(synthetic_parent_row))
@@ -165,10 +176,19 @@ class RowChangeTracker:
             if self._rows_differ(first_row, second_row):
                 needs_dual_export = True
 
+        if needs_dual_export:
+            return ExportPlan(
+                first_pass_rows=[header, *first_pass_rows],
+                second_pass_rows=[header, *second_pass_rows],
+                pass_count=2,
+                pass_file_labels=WORK_REG_PASS_LABELS,
+                pass_match_hints=WORK_REG_PASS_MATCH_MODES,
+            )
+
         return ExportPlan(
             first_pass_rows=[header, *first_pass_rows],
             second_pass_rows=[header, *second_pass_rows],
-            pass_count=2 if needs_dual_export else 1,
+            pass_count=1,
         )
 
     def work_reg_export_plan(
@@ -554,6 +574,9 @@ class RowChangeTracker:
             return None
 
         base_name = name_match.group(1)
+        if base_name.endswith("_WORK_REG"):
+            return None
+
         base_key = self._derive_array_parent_base(current_row, baseline_row or current_row)
         base_description = base_key if base_key.endswith(" Register") else base_key + " Register"
 

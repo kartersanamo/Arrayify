@@ -220,6 +220,37 @@ class RowChangeTrackerTests(unittest.TestCase):
         self.assertEqual(first_path.name, "export-FIRST.csv")
         self.assertEqual(second_path.name, "export-SECOND.csv")
 
+    def test_labeled_dual_export_paths(self) -> None:
+        paths = ExportPlan.export_paths(
+            Path("/tmp/JuneThird.csv"),
+            2,
+            ("BYREF-FIRST", "BYNAME-SECOND"),
+        )
+        self.assertEqual(paths[0].name, "JuneThird-BYREF-FIRST.csv")
+        self.assertEqual(paths[1].name, "JuneThird-BYNAME-SECOND.csv")
+
+    def test_dual_export_uses_byref_byname_labels(self) -> None:
+        baseline = build_lm4p_block()
+        current = copy.deepcopy(baseline)
+        current[2][0] = TankRules.build_work_reg_tag("LM_4P", 0)
+        current[2][2] = "Liquid Mud #4-P Register # 0"
+        current[2][15] = ""
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        bindings = scan_work_register_bindings(baseline, TankRules())
+        plan = tracker.export_plan(current, work_reg_bindings=bindings)
+
+        self.assertTrue(plan.needs_dual_export)
+        assert plan.pass_file_labels == ("BYREF-FIRST", "BYNAME-SECOND")
+        assert plan.pass_match_hints == (
+            "Match by Ref Address And Data Type",
+            "Match by Variable Name",
+        )
+        self.assertEqual(plan.first_pass_rows[1][0], "LM_4P_WORK_REG_0")
+        self.assertEqual(plan.first_pass_rows[1][15], "%R00101")
+        self.assertEqual(plan.second_pass_rows[1][1], "INT")
+        self.assertEqual(plan.second_pass_rows[1][15], "")
+
     def test_single_export_when_only_description_changes(self) -> None:
         baseline = build_lm4p_block()
         current = copy.deepcopy(baseline)

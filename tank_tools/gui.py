@@ -750,7 +750,10 @@ class TankManagerApp:
         row_label = "tank register row" if work_registers_only else "modified row"
         rows_label = f"{row_label}s" if export_plan.modified_row_count != 1 else row_label
 
-        if export_plan.needs_dual_export:
+        use_labeled_export_files = (
+            export_plan.needs_dual_export or export_plan.pass_file_labels is not None
+        )
+        if use_labeled_export_files:
             export_paths = ExportPlan.export_paths(
                 selected_path,
                 export_plan.pass_count,
@@ -762,10 +765,16 @@ class TankManagerApp:
             self.status_var.set(
                 f"Exported {export_plan.modified_row_count} {rows_label} to {file_names}."
             )
-            if work_registers_only and export_plan.pass_match_hints is not None:
-                self._append_log(
-                    self._work_reg_export_log_message(export_paths, export_plan.pass_match_hints),
-                    level="success",
+            if export_plan.pass_match_hints is not None:
+                log_message = self._labeled_export_log_message(
+                    export_paths,
+                    export_plan.pass_match_hints,
+                    work_registers_only=work_registers_only,
+                )
+                self._append_log(log_message, level="success")
+                messagebox.showinfo(
+                    "Export complete",
+                    log_message.strip(),
                 )
             else:
                 self._append_log(
@@ -775,15 +784,21 @@ class TankManagerApp:
         else:
             self._write_export_rows(selected_path, export_plan.second_pass_rows)
             self.status_var.set(
-                f"Exported {export_plan.modified_row_count} {rows_label} to {selected_path}"
+                f"Exported {export_plan.modified_row_count} {rows_label} to {selected_path.name}"
             )
 
     @staticmethod
-    def _work_reg_export_log_message(
+    def _labeled_export_log_message(
         export_paths: tuple[Path, ...],
         match_hints: tuple[str, ...],
+        work_registers_only: bool = False,
     ) -> str:
-        lines = ["Tank register export complete. Import each file in order:\n"]
+        title = (
+            "Tank register export complete."
+            if work_registers_only
+            else "Export complete."
+        )
+        lines = [f"{title} Import each file in order:\n"]
         for export_path, hint in zip(export_paths, match_hints):
             lines.append(f"- {export_path.name}: {hint}")
         return "\n".join(lines) + "\n"
