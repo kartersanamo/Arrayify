@@ -114,6 +114,7 @@ class TankWorkRegServiceTests(unittest.TestCase):
 
         assert result is not None
         by_name = {row[0]: row for row in result[1:]}
+        self.assertEqual(by_name["BS_AR2_WORK_REG"][7], "4")
         self.assertEqual(by_name["BS_AR2_WORK_REG[0]"][2], "Ballast Anti Roll #2 Tank Input")
         self.assertEqual(by_name["BS_AR2_WORK_REG[3]"][15], "")
 
@@ -130,6 +131,7 @@ class TankWorkRegServiceTests(unittest.TestCase):
 
         assert result is not None
         by_name = {row[0]: row for row in result[1:]}
+        self.assertEqual(by_name["LM_4P_WORK_REG"][7], "4")
         self.assertEqual(by_name["LM_4P_WORK_REG[0]"][2], "Liquid Mud #4-P Tank Input")
         self.assertEqual(by_name["LM_4P_WORK_REG[3]"][15], "")
         self.assertEqual(by_name["LM_4P_WORK_REG[0]"][15], "")
@@ -305,6 +307,28 @@ class RowChangeTrackerTests(unittest.TestCase):
         self.assertEqual(exported_names, {"LM_4P_WORK_REG[0]", "LM_4P_WORK_REG[1]"})
         self.assertNotIn("R100", exported_names)
 
+    def test_work_register_export_synthesizes_parent_row(self) -> None:
+        baseline = build_lm4p_block()
+        current = copy.deepcopy(baseline)
+        for offset in range(4):
+            current[offset + 2][0] = f"LM_4P_WORK_REG[{offset}]"
+            current[offset + 2][2] = [
+                "Liquid Mud #4-P Tank Input",
+                "Liquid Mud #4-P Tank Total",
+                "Liquid Mud #4-P Tank Increment",
+                "Liquid Mud #4-P Tank Output",
+            ][offset]
+            current[offset + 2][15] = ""
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        bindings = scan_work_register_bindings(baseline, TankRules())
+        plan = tracker.export_plan(current, work_reg_bindings=bindings, work_registers_only=True)
+
+        exported = {row[0]: row for row in plan.second_pass_rows[1:]}
+        self.assertIn("LM_4P_WORK_REG", exported)
+        self.assertEqual(exported["LM_4P_WORK_REG"][7], "4")
+        self.assertEqual(exported["LM_4P_WORK_REG"][12], "0, 0, 0, 0")
+
 
 class NormalizeWorkRegSkipTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -343,10 +367,11 @@ class NormalizeWorkRegSkipTests(unittest.TestCase):
         )
 
         assert result is not None
-        self.assertEqual(result[2][0], "LM_4P_WORK_REG[0]")
-        self.assertEqual(result[3][0], "LM_4P_WORK_REG[1]")
-        self.assertTrue(result[6][0].startswith("LM_4P_TANK_TABLE"))
-        self.assertNotEqual(result[2][0], result[6][0])
+        names = [row[0] for row in result[1:]]
+        self.assertIn("LM_4P_WORK_REG", names)
+        self.assertIn("LM_4P_WORK_REG[0]", names)
+        self.assertIn("LM_4P_WORK_REG[1]", names)
+        self.assertTrue(any(name.startswith("LM_4P_TANK_TABLE") for name in names))
 
 
 if __name__ == "__main__":

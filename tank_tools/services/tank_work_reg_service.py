@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Callable
 
 from tank_tools.config import ProjectConfig
@@ -12,6 +13,7 @@ from tank_tools.rules import TankRules
 
 class TankWorkRegService:
     WORK_REG_COUNT = 4
+    _work_reg_indexed_name_re = re.compile(r"^(.+_WORK_REG)\[(\d+)\]$")
 
     def __init__(self, config: ProjectConfig, csv_repository: CsvRepository, rules: TankRules) -> None:
         self._config = config
@@ -125,6 +127,7 @@ class TankWorkRegService:
                 )
 
         self._print_summary(matched_rows, missed_rows, cli_style)
+        rows = self._insert_work_reg_array_base_rows(rows)
         if write_output:
             self._csv_repository.write_rows(output_path, rows)
             print(f"Labeled {labeled_count} work register rows.")
@@ -136,6 +139,81 @@ class TankWorkRegService:
             event_callback({"type": "completed", "workflow": "work_regs", "rows": [list(item) for item in rows]})
 
         return rows
+
+    def _insert_work_reg_array_base_rows(self, rows: list[list[str]]) -> list[list[str]]:
+        if not rows:
+            return rows
+
+        existing_names = {row[0] for row in rows[1:] if row}
+        output_rows: list[list[str]] = [rows[0]]
+        row_index = 1
+
+        while row_index < len(rows):
+            row = rows[row_index]
+            if not row:
+                output_rows.append(row)
+                row_index += 1
+                continue
+
+            name_match = self._work_reg_indexed_name_re.match(row[0])
+            if name_match is None or int(name_match.group(2)) != 0:
+                output_rows.append(row)
+                row_index += 1
+                continue
+
+            base_name = name_match.group(1)
+            if base_name in existing_names:
+                output_rows.append(row)
+                row_index += 1
+                continue
+
+            if not self._has_full_work_reg_block(rows, row_index, base_name):
+                output_rows.append(row)
+                row_index += 1
+                continue
+
+            base_row = list(row)
+            if len(base_row) <= 12:
+                base_row.extend([""] * (13 - len(base_row)))
+
+            base_row[0] = base_name
+            base_row[2] = self._base_work_reg_description(base_row[2])
+            base_row[7] = str(self.WORK_REG_COUNT)
+            base_row[12] = ", ".join(["0"] * self.WORK_REG_COUNT)
+            output_rows.append(base_row)
+            existing_names.add(base_name)
+
+            output_rows.append(row)
+            row_index += 1
+
+        return output_rows
+
+    def _has_full_work_reg_block(self, rows: list[list[str]], start_index: int, base_name: str) -> bool:
+        for offset in range(self.WORK_REG_COUNT):
+            check_index = start_index + offset
+            if check_index >= len(rows):
+                return False
+
+            candidate = rows[check_index]
+            if not candidate:
+                return False
+
+            name_match = self._work_reg_indexed_name_re.match(candidate[0])
+            if name_match is None:
+                return False
+
+            if name_match.group(1) != base_name or int(name_match.group(2)) != offset:
+                return False
+
+        return True
+
+    @staticmethod
+    def _base_work_reg_description(description: str) -> str:
+        stripped = description.strip()
+        for suffix in (" Tank Input", " Tank Total", " Tank Increment", " Tank Output"):
+            if stripped.endswith(suffix):
+                return stripped[: -len(suffix)] + " Tank"
+        return stripped
 
     @staticmethod
     def _build_register_lookup(
