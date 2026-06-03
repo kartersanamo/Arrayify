@@ -444,7 +444,8 @@ class RowChangeTracker:
             return None
 
         base_name = name_match.group(1)
-        base_description = self._derive_array_parent_description(current_row, baseline_row or current_row)
+        base_key = self._derive_array_parent_base(current_row, baseline_row or current_row)
+        base_description = base_key if base_key.endswith(" Register") else base_key + " Register"
 
         description_match = rules.tank_description_re.match(current_row[2])
         if description_match is not None and description_match.group(2) != "0":
@@ -467,11 +468,11 @@ class RowChangeTracker:
             next_description_match = rules.tank_description_re.match(next_row[2])
             if next_description_match is not None:
                 if (
-                    next_description_match.group(1).strip() != base_description
+                    next_description_match.group(1).strip() != base_key
                     or int(next_description_match.group(2)) != next_index
                 ):
                     break
-            elif self._derive_array_parent_description(next_row, next_row) != base_description:
+            elif self._derive_array_parent_base(next_row, next_row) != base_key:
                 break
 
             group_length += 1
@@ -519,7 +520,12 @@ class RowChangeTracker:
         return length
 
     @staticmethod
-    def _derive_array_parent_description(current_row: list[str], baseline_row: list[str]) -> str:
+    def _derive_array_parent_base(current_row: list[str], baseline_row: list[str]) -> str:
+        """Derive the common base description used to match indexed child rows.
+
+        This returns the description without the appended 'Register' suffix so
+        that child rows with "... @ N" can be matched reliably.
+        """
         current_description = RowChangeTracker._cell(current_row, 2)
         description_match = re.match(r"^(.*) @ \d+$", current_description)
         if description_match is not None:
@@ -531,6 +537,30 @@ class RowChangeTracker:
 
         baseline_description = RowChangeTracker._cell(baseline_row, 2)
         return baseline_description or current_description
+
+    @staticmethod
+    def _derive_array_parent_description(current_row: list[str], baseline_row: list[str]) -> str:
+        current_description = RowChangeTracker._cell(current_row, 2)
+        description_match = re.match(r"^(.*) @ \d+$", current_description)
+        if description_match is not None:
+            base = description_match.group(1).strip()
+        else:
+            base = None
+            for suffix in (" Input", " Total", " Increment", " Output"):
+                if current_description.endswith(suffix):
+                    base = current_description[: -len(suffix)].strip()
+                    break
+
+            if base is None:
+                baseline_description = RowChangeTracker._cell(baseline_row, 2)
+                base = baseline_description or current_description
+
+        base = base.strip()
+        if base.endswith(" Register"):
+            return base
+        if base.endswith(" Tank"):
+            return base + " Register"
+        return base + " Register"
 
     @staticmethod
     def _io_value(row: list[str]) -> str:

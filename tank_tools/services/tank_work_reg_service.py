@@ -212,8 +212,16 @@ class TankWorkRegService:
         stripped = description.strip()
         for suffix in (" Tank Input", " Tank Total", " Tank Increment", " Tank Output"):
             if stripped.endswith(suffix):
-                return stripped[: -len(suffix)] + " Tank"
-        return stripped
+                base = stripped[: -len(suffix)].strip() + " Tank"
+                return base if base.endswith(" Register") else base + " Register"
+
+        if stripped.endswith(" Register"):
+            return stripped
+
+        if stripped.endswith(" Tank"):
+            return stripped + " Register"
+
+        return stripped + " Register"
 
     @staticmethod
     def _build_register_lookup(
