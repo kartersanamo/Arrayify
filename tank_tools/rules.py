@@ -13,7 +13,10 @@ class TankRules:
     register_name_re: re.Pattern[str] = field(default=re.compile(r"^R(\d+)$"), init=False)
     tank_description_re: re.Pattern[str] = field(default=re.compile(r"^(.*) @ (\d+)$"), init=False)
     register_array_name_re: re.Pattern[str] = field(default=re.compile(r"^R(\d+)\[(\d+)\]$"), init=False)
-    work_reg_tag_re: re.Pattern[str] = field(default=re.compile(r"^.+_WORK_REG\[\d+\]$"), init=False)
+    work_reg_tag_re: re.Pattern[str] = field(
+        default=re.compile(r"^.+_WORK_REG(?:_\d+|\[\d+\])$"),
+        init=False,
+    )
     table_title_re: re.Pattern[str] = field(default=re.compile(r"^Tank Soundings for (.+?) containing "), init=False)
     tag_prefix_overrides: dict[str, str | None] = field(
         default_factory=lambda: {
@@ -64,11 +67,7 @@ class TankRules:
 
     @staticmethod
     def build_work_reg_tag(prefix: str, index: int) -> str:
-        return f"{prefix}_WORK_REG[{index}]"
-
-    @staticmethod
-    def build_work_reg_parent_description(tank_label: str) -> str:
-        return f"{tank_label} Register"
+        return f"{prefix}_WORK_REG_{index}"
 
     @staticmethod
     def build_work_reg_description(tank_label: str, index: int) -> str:
