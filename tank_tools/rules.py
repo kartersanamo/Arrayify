@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-WORK_REG_SUFFIXES: tuple[str, ...] = ("Tank Input", "Tank Total", "Tank Increment", "Tank Output")
+WORK_REG_TARGET_TYPE = "INT"
 
 
 @dataclass
@@ -67,8 +67,12 @@ class TankRules:
         return f"{prefix}_WORK_REG[{index}]"
 
     @staticmethod
+    def build_work_reg_parent_description(tank_label: str) -> str:
+        return f"{tank_label} Register"
+
+    @staticmethod
     def build_work_reg_description(tank_label: str, index: int) -> str:
-        return f"{tank_label} {WORK_REG_SUFFIXES[index]}"
+        return f"{tank_label} Register # {index}"
 
     @staticmethod
     def format_custom_work_reg_prefix(custom_tag: str) -> str | None:

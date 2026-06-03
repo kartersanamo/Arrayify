@@ -13,13 +13,19 @@ from tank_tools.services import ArrayifyService, TagNormalizationService, TankWo
 from tank_tools.work_reg_registry import scan_work_register_bindings
 
 
-def make_row(register: str, description: str = "", initial: str = "0") -> list[str]:
+def make_row(
+    register: str,
+    description: str = "",
+    initial: str = "0",
+    dtype: str = "REAL",
+    io: str = "%R00101",
+) -> list[str]:
     row = [""] * 16
     row[0] = register
-    row[1] = "REAL"
+    row[1] = dtype
     row[2] = description
     row[12] = initial
-    row[15] = "%R00101"
+    row[15] = io
     return row
 
 
@@ -50,7 +56,11 @@ class TankRulesWorkRegTests(unittest.TestCase):
         self.assertTrue(self.rules.is_work_reg_tag("LM_4P_WORK_REG[2]"))
         self.assertEqual(
             self.rules.build_work_reg_description("Liquid Mud #4-P", 0),
-            "Liquid Mud #4-P Tank Input",
+            "Liquid Mud #4-P Register # 0",
+        )
+        self.assertEqual(
+            self.rules.build_work_reg_parent_description("Liquid Mud #4-P"),
+            "Liquid Mud #4-P Register",
         )
 
 
@@ -115,7 +125,8 @@ class TankWorkRegServiceTests(unittest.TestCase):
         assert result is not None
         by_name = {row[0]: row for row in result[1:]}
         self.assertEqual(by_name["BS_AR2_WORK_REG"][7], "4")
-        self.assertEqual(by_name["BS_AR2_WORK_REG[0]"][2], "Ballast Anti Roll #2 Tank Input")
+        self.assertEqual(by_name["BS_AR2_WORK_REG"][1], "INT")
+        self.assertEqual(by_name["BS_AR2_WORK_REG[0]"][2], "Ballast Anti Roll #2 Register # 0")
         self.assertEqual(by_name["BS_AR2_WORK_REG[3]"][15], "")
 
     def test_labels_work_registers_by_saved_bindings(self) -> None:
@@ -132,7 +143,8 @@ class TankWorkRegServiceTests(unittest.TestCase):
         assert result is not None
         by_name = {row[0]: row for row in result[1:]}
         self.assertEqual(by_name["LM_4P_WORK_REG"][7], "4")
-        self.assertEqual(by_name["LM_4P_WORK_REG[0]"][2], "Liquid Mud #4-P Tank Input")
+        self.assertEqual(by_name["LM_4P_WORK_REG"][1], "INT")
+        self.assertEqual(by_name["LM_4P_WORK_REG[0]"][2], "Liquid Mud #4-P Register # 0")
         self.assertEqual(by_name["LM_4P_WORK_REG[3]"][15], "")
         self.assertEqual(by_name["LM_4P_WORK_REG[0]"][15], "")
 
@@ -192,7 +204,7 @@ class RowChangeTrackerTests(unittest.TestCase):
         baseline = build_lm4p_block()
         current = copy.deepcopy(baseline)
         current[2][0] = "LM_4P_WORK_REG[0]"
-        current[2][2] = "Liquid Mud #4-P Tank Input"
+        current[2][2] = "Liquid Mud #4-P Register # 0"
         current[2][15] = ""
 
         tracker = RowChangeTracker(copy.deepcopy(baseline))
@@ -294,40 +306,144 @@ class RowChangeTrackerTests(unittest.TestCase):
         baseline = build_lm4p_block()
         current = copy.deepcopy(baseline)
         current[1][2] = "Changed volume description"
-        current[2][0] = "LM_4P_WORK_REG[0]"
-        current[2][2] = "Liquid Mud #4-P Tank Input"
-        current[3][0] = "LM_4P_WORK_REG[1]"
-        current[3][2] = "Liquid Mud #4-P Tank Total"
-
-        tracker = RowChangeTracker(copy.deepcopy(baseline))
-        bindings = scan_work_register_bindings(baseline, TankRules())
-        plan = tracker.export_plan(current, work_reg_bindings=bindings, work_registers_only=True)
-
-        exported_names = {row[0] for row in plan.second_pass_rows[1:]}
-        self.assertEqual(exported_names, {"LM_4P_WORK_REG[0]", "LM_4P_WORK_REG[1]"})
-        self.assertNotIn("R100", exported_names)
-
-    def test_work_register_export_synthesizes_parent_row(self) -> None:
-        baseline = build_lm4p_block()
-        current = copy.deepcopy(baseline)
+        tank_label = "Liquid Mud #4-P"
         for offset in range(4):
             current[offset + 2][0] = f"LM_4P_WORK_REG[{offset}]"
-            current[offset + 2][2] = [
-                "Liquid Mud #4-P Tank Input",
-                "Liquid Mud #4-P Tank Total",
-                "Liquid Mud #4-P Tank Increment",
-                "Liquid Mud #4-P Tank Output",
-            ][offset]
+            current[offset + 2][1] = "INT"
+            current[offset + 2][2] = TankRules.build_work_reg_description(tank_label, offset)
             current[offset + 2][15] = ""
 
         tracker = RowChangeTracker(copy.deepcopy(baseline))
         bindings = scan_work_register_bindings(baseline, TankRules())
         plan = tracker.export_plan(current, work_reg_bindings=bindings, work_registers_only=True)
 
-        exported = {row[0]: row for row in plan.second_pass_rows[1:]}
+        final_rows = plan.third_pass_rows if plan.pass_count == 3 else plan.second_pass_rows
+        exported_names = {row[0] for row in final_rows[1:]}
+        self.assertIn("LM_4P_WORK_REG", exported_names)
+        self.assertIn("LM_4P_WORK_REG[0]", exported_names)
+        self.assertNotIn("R100", exported_names)
+
+    def test_work_register_export_synthesizes_parent_row(self) -> None:
+        baseline = build_lm4p_block()
+        current = copy.deepcopy(baseline)
+        tank_label = "Liquid Mud #4-P"
+        for offset in range(4):
+            current[offset + 2][0] = f"LM_4P_WORK_REG[{offset}]"
+            current[offset + 2][1] = "INT"
+            current[offset + 2][2] = TankRules.build_work_reg_description(tank_label, offset)
+            current[offset + 2][15] = ""
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        bindings = scan_work_register_bindings(baseline, TankRules())
+        plan = tracker.export_plan(current, work_reg_bindings=bindings, work_registers_only=True)
+
+        final_rows = plan.third_pass_rows if plan.pass_count == 3 else plan.second_pass_rows
+        exported = {row[0]: row for row in final_rows[1:]}
         self.assertIn("LM_4P_WORK_REG", exported)
         self.assertEqual(exported["LM_4P_WORK_REG"][7], "4")
         self.assertEqual(exported["LM_4P_WORK_REG"][12], "0, 0, 0, 0")
+        self.assertEqual(exported["LM_4P_WORK_REG"][1], "INT")
+
+    def test_work_register_three_pass_export_when_index_zero_is_word(self) -> None:
+        header = ["Name", "Type", "Description"] + [""] * 13
+        baseline = [
+            header,
+            make_row("R10240", dtype="WORD", io="%R10240"),
+            make_row("R10241", dtype="INT", io="%R10241"),
+            make_row("R10242", dtype="INT", io="%R10242"),
+            make_row("R10243", dtype="INT", io="%R10243"),
+        ]
+        bindings = {"Fuel Oil #2-P Tank Volume": ["R10240", "R10241", "R10242", "R10243"]}
+        prefix = "FO_2P"
+        tank_label = "Fuel Oil #2-P"
+        current = [header]
+        for offset in range(4):
+            current.append(
+                make_row(
+                    f"{prefix}_WORK_REG[{offset}]",
+                    TankRules.build_work_reg_description(tank_label, offset),
+                    dtype="INT",
+                    io="",
+                )
+            )
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        plan = tracker.export_plan(
+            current,
+            work_reg_bindings=bindings,
+            work_registers_only=True,
+        )
+
+        self.assertEqual(plan.pass_count, 3)
+        first_rows = plan.first_pass_rows[1:]
+        self.assertEqual(len(first_rows), 5)
+        self.assertEqual(first_rows[0][0], f"{prefix}_WORK_REG")
+
+        first_by_name = {row[0]: row for row in first_rows}
+        self.assertEqual(first_by_name[f"{prefix}_WORK_REG"][1], "WORD")
+        self.assertEqual(first_by_name[f"{prefix}_WORK_REG"][15], "")
+        self.assertEqual(first_by_name[f"{prefix}_WORK_REG"][7], "4")
+        self.assertEqual(first_by_name[f"{prefix}_WORK_REG[0]"][1], "WORD")
+        self.assertEqual(first_by_name[f"{prefix}_WORK_REG[0]"][15], "%R10240")
+
+        type_rows = plan.second_pass_rows[1:]
+        self.assertEqual(len(type_rows), 2)
+        type_by_name = {row[0]: row for row in type_rows}
+        self.assertEqual(type_by_name[f"{prefix}_WORK_REG"][1], "INT")
+        self.assertEqual(type_by_name[f"{prefix}_WORK_REG"][15], "")
+        self.assertEqual(type_by_name[f"{prefix}_WORK_REG[0]"][1], "INT")
+        self.assertEqual(type_by_name[f"{prefix}_WORK_REG[0]"][15], "%R10240")
+
+        assert plan.third_pass_rows is not None
+        final_by_name = {row[0]: row for row in plan.third_pass_rows[1:]}
+        self.assertIn(f"{prefix}_WORK_REG", final_by_name)
+        self.assertEqual(final_by_name[f"{prefix}_WORK_REG"][7], "4")
+        self.assertEqual(final_by_name[f"{prefix}_WORK_REG"][15], "")
+        self.assertEqual(final_by_name[f"{prefix}_WORK_REG[0]"][15], "")
+
+    def test_work_register_two_pass_export_when_index_zero_is_int(self) -> None:
+        header = ["Name", "Type", "Description"] + [""] * 13
+        baseline = [
+            header,
+            make_row("R27240", dtype="INT", io="%R27240"),
+            make_row("R27241", dtype="INT", io="%R27241"),
+            make_row("R27242", dtype="INT", io="%R27242"),
+            make_row("R27243", dtype="INT", io="%R27243"),
+        ]
+        bindings = {"Methanol Pump Void #1-S Volume": ["R27240", "R27241", "R27242", "R27243"]}
+        tank_label = "Methanol Pump Void #1-S"
+        current = [header]
+        for offset in range(4):
+            current.append(
+                make_row(
+                    f"ME_1S_WORK_REG[{offset}]",
+                    TankRules.build_work_reg_description(tank_label, offset),
+                    dtype="INT",
+                    io="",
+                )
+            )
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        plan = tracker.export_plan(
+            current,
+            work_reg_bindings=bindings,
+            work_registers_only=True,
+        )
+
+        self.assertEqual(plan.pass_count, 2)
+        self.assertIsNone(plan.third_pass_rows)
+        first_rows = plan.first_pass_rows[1:]
+        self.assertEqual(len(first_rows), 5)
+        self.assertEqual(first_rows[0][0], "ME_1S_WORK_REG")
+        first_by_name = {row[0]: row for row in first_rows}
+        self.assertEqual(first_by_name["ME_1S_WORK_REG"][1], "INT")
+        self.assertEqual(first_by_name["ME_1S_WORK_REG"][15], "")
+        self.assertEqual(len(plan.second_pass_rows[1:]), 5)
+
+    def test_three_pass_export_paths(self) -> None:
+        paths = ExportPlan.export_paths(Path("/tmp/export.csv"), pass_count=3)
+        self.assertEqual(len(paths), 3)
+        self.assertEqual(paths[2].name, "export-THIRD.csv")
 
 
 class NormalizeWorkRegSkipTests(unittest.TestCase):

@@ -4,28 +4,46 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from tank_tools.rules import TankRules
+from tank_tools.rules import WORK_REG_TARGET_TYPE, TankRules
+from tank_tools.work_reg_registry import WORK_REG_COUNT
 
 NAME_COLUMN = 0
+DATATYPE_COLUMN = 1
+ARRAY_DIMENSION_COLUMN = 7
 IOADDRESS_COLUMN = 15
+
+_WORK_REG_INDEXED_RE = re.compile(r"^(.+_WORK_REG)\[(\d+)\]$")
+_WORK_REG_BASE_RE = re.compile(r"^.+_WORK_REG$")
 
 
 @dataclass(frozen=True)
 class ExportPlan:
     first_pass_rows: list[list[str]]
     second_pass_rows: list[list[str]]
-    needs_dual_export: bool
+    third_pass_rows: list[list[str]] | None = None
+    pass_count: int = 1
+
+    @property
+    def needs_dual_export(self) -> bool:
+        return self.pass_count > 1
 
     @property
     def modified_row_count(self) -> int:
-        return max(0, len(self.second_pass_rows) - 1)
+        return max(0, len(self._final_pass_rows()) - 1)
+
+    def _final_pass_rows(self) -> list[list[str]]:
+        if self.pass_count >= 3 and self.third_pass_rows is not None:
+            return self.third_pass_rows
+        return self.second_pass_rows
 
     @staticmethod
-    def export_paths(selected_path: Path) -> tuple[Path, Path]:
-        return (
-            selected_path.with_name(f"{selected_path.stem}-FIRST{selected_path.suffix}"),
-            selected_path.with_name(f"{selected_path.stem}-SECOND{selected_path.suffix}"),
-        )
+    def export_paths(selected_path: Path, pass_count: int = 2) -> tuple[Path, ...]:
+        first_path = selected_path.with_name(f"{selected_path.stem}-FIRST{selected_path.suffix}")
+        second_path = selected_path.with_name(f"{selected_path.stem}-SECOND{selected_path.suffix}")
+        if pass_count >= 3:
+            third_path = selected_path.with_name(f"{selected_path.stem}-THIRD{selected_path.suffix}")
+            return (first_path, second_path, third_path)
+        return (first_path, second_path)
 
 
 @dataclass
@@ -41,9 +59,11 @@ class RowChangeTracker:
         work_registers_only: bool = False,
     ) -> ExportPlan:
         if not current_rows:
-            return ExportPlan(first_pass_rows=[], second_pass_rows=[], needs_dual_export=False)
+            return ExportPlan(first_pass_rows=[], second_pass_rows=[], pass_count=1)
 
         rules = self.rules or TankRules()
+        if work_registers_only and work_reg_bindings:
+            return self.work_reg_export_plan(current_rows, work_reg_bindings, prefix_map or {}, rules)
         header = current_rows[0]
         first_pass_rows: list[list[str]] = []
         second_pass_rows: list[list[str]] = []
@@ -117,7 +137,91 @@ class RowChangeTracker:
         return ExportPlan(
             first_pass_rows=[header, *first_pass_rows],
             second_pass_rows=[header, *second_pass_rows],
-            needs_dual_export=needs_dual_export,
+            pass_count=2 if needs_dual_export else 1,
+        )
+
+    def work_reg_export_plan(
+        self,
+        current_rows: list[list[str]],
+        work_reg_bindings: dict[str, list[str]],
+        prefix_map: dict[str, str],
+        rules: TankRules,
+    ) -> ExportPlan:
+        header = current_rows[0]
+        baseline_by_name = self._index_baseline_rows()
+        match_rows: list[list[str]] = []
+        type_rows: list[list[str]] = []
+        final_rows: list[list[str]] = []
+        needs_type_pass = False
+
+        for _base_name, child_rows in self._iter_work_reg_blocks(current_rows):
+            used_baseline_names: set[str] = set()
+            baselines: list[list[str] | None] = []
+            for child_row in child_rows:
+                baselines.append(
+                    self._resolve_from_work_reg_bindings(
+                        self._cell(child_row, NAME_COLUMN),
+                        baseline_by_name,
+                        used_baseline_names,
+                        work_reg_bindings,
+                        prefix_map,
+                        rules,
+                    )
+                )
+
+            has_ref_match = any(
+                baseline is not None and self._io_value(baseline)
+                for baseline in baselines
+            )
+
+            if has_ref_match:
+                index_zero_baseline = baselines[0]
+                if index_zero_baseline is not None:
+                    match_rows.append(
+                        self._work_reg_match_pass_parent_row(child_rows, index_zero_baseline)
+                    )
+
+                for child_row, baseline in zip(child_rows, baselines):
+                    if baseline is None:
+                        continue
+                    match_rows.append(self._work_reg_match_pass_row(child_row, baseline))
+
+                if (
+                    index_zero_baseline is not None
+                    and self._cell(index_zero_baseline, DATATYPE_COLUMN).upper() == "WORD"
+                ):
+                    needs_type_pass = True
+                    type_rows.append(
+                        self._work_reg_type_pass_parent_row(child_rows, index_zero_baseline)
+                    )
+                    type_rows.append(
+                        self._work_reg_type_pass_row(child_rows[0], index_zero_baseline)
+                    )
+
+            final_rows.extend(self._work_reg_final_pass_rows(child_rows))
+
+        if not final_rows:
+            return ExportPlan(first_pass_rows=[], second_pass_rows=[], pass_count=1)
+
+        if not match_rows:
+            return ExportPlan(
+                first_pass_rows=[header, *final_rows],
+                second_pass_rows=[header, *final_rows],
+                pass_count=1,
+            )
+
+        if needs_type_pass:
+            return ExportPlan(
+                first_pass_rows=[header, *match_rows],
+                second_pass_rows=[header, *type_rows],
+                third_pass_rows=[header, *final_rows],
+                pass_count=3,
+            )
+
+        return ExportPlan(
+            first_pass_rows=[header, *match_rows],
+            second_pass_rows=[header, *final_rows],
+            pass_count=2,
         )
 
     def rows_for_export(
@@ -579,3 +683,166 @@ class RowChangeTracker:
             if left_value != right_value:
                 return True
         return False
+
+    def _iter_work_reg_blocks(
+        self,
+        current_rows: list[list[str]],
+    ) -> list[tuple[str, list[list[str]]]]:
+        blocks: list[tuple[str, list[list[str]]]] = []
+        row_index = 1
+
+        while row_index < len(current_rows):
+            row = current_rows[row_index]
+            if not row:
+                row_index += 1
+                continue
+
+            current_name = self._cell(row, NAME_COLUMN)
+            if _WORK_REG_BASE_RE.match(current_name) and "[" not in current_name:
+                row_index += 1
+                continue
+
+            name_match = _WORK_REG_INDEXED_RE.match(current_name)
+            if name_match is None or int(name_match.group(2)) != 0:
+                row_index += 1
+                continue
+
+            base_name = name_match.group(1)
+            if not self._has_work_reg_block_at(current_rows, row_index, base_name):
+                row_index += 1
+                continue
+
+            child_rows = [self._copy_row(current_rows[row_index + offset]) for offset in range(WORK_REG_COUNT)]
+            blocks.append((base_name, child_rows))
+            row_index += WORK_REG_COUNT
+
+        return blocks
+
+    @staticmethod
+    def _has_work_reg_block_at(rows: list[list[str]], start_index: int, base_name: str) -> bool:
+        for offset in range(WORK_REG_COUNT):
+            check_index = start_index + offset
+            if check_index >= len(rows) or not rows[check_index]:
+                return False
+
+            name_match = _WORK_REG_INDEXED_RE.match(
+                RowChangeTracker._cell(rows[check_index], NAME_COLUMN)
+            )
+            if name_match is None:
+                return False
+            if name_match.group(1) != base_name or int(name_match.group(2)) != offset:
+                return False
+
+        return True
+
+    @staticmethod
+    def _work_reg_match_pass_parent_row(
+        child_rows: list[list[str]],
+        index_zero_baseline: list[str],
+    ) -> list[str]:
+        """Array parent for pass 1: blank IO (new tag), baseline index-0 type, dimension set."""
+        first_child = RowChangeTracker._copy_row(child_rows[0])
+        base_name_match = _WORK_REG_INDEXED_RE.match(RowChangeTracker._cell(first_child, NAME_COLUMN))
+        if base_name_match is None:
+            return first_child
+
+        base_name = base_name_match.group(1)
+        parent_row = RowChangeTracker._copy_row(first_child)
+        parent_row[NAME_COLUMN] = base_name
+        parent_row[DATATYPE_COLUMN] = RowChangeTracker._cell(index_zero_baseline, DATATYPE_COLUMN)
+        parent_row[2] = RowChangeTracker._work_reg_parent_description_from_child(first_child[2])
+        if len(parent_row) <= ARRAY_DIMENSION_COLUMN:
+            parent_row.extend([""] * (ARRAY_DIMENSION_COLUMN + 1 - len(parent_row)))
+        parent_row[ARRAY_DIMENSION_COLUMN] = str(WORK_REG_COUNT)
+        if len(parent_row) <= 12:
+            parent_row.extend([""] * (13 - len(parent_row)))
+        parent_row[12] = ", ".join(["0"] * WORK_REG_COUNT)
+        parent_row[IOADDRESS_COLUMN] = ""
+        return parent_row
+
+    @staticmethod
+    def _work_reg_type_pass_parent_row(
+        child_rows: list[list[str]],
+        index_zero_baseline: list[str],
+    ) -> list[str]:
+        row = RowChangeTracker._work_reg_match_pass_parent_row(child_rows, index_zero_baseline)
+        row[DATATYPE_COLUMN] = WORK_REG_TARGET_TYPE
+        return row
+
+    @staticmethod
+    def _work_reg_match_pass_row(current_row: list[str], baseline_row: list[str]) -> list[str]:
+        row = RowChangeTracker._copy_row(current_row)
+        if len(row) <= DATATYPE_COLUMN:
+            row.extend([""] * (DATATYPE_COLUMN + 1 - len(row)))
+        row[DATATYPE_COLUMN] = RowChangeTracker._cell(baseline_row, DATATYPE_COLUMN)
+        row[IOADDRESS_COLUMN] = RowChangeTracker._io_value(baseline_row)
+        if len(row) <= ARRAY_DIMENSION_COLUMN:
+            row.extend([""] * (ARRAY_DIMENSION_COLUMN + 1 - len(row)))
+        row[ARRAY_DIMENSION_COLUMN] = "0"
+        return row
+
+    @staticmethod
+    def _work_reg_type_pass_row(current_row: list[str], baseline_row: list[str]) -> list[str]:
+        row = RowChangeTracker._work_reg_match_pass_row(current_row, baseline_row)
+        row[DATATYPE_COLUMN] = WORK_REG_TARGET_TYPE
+        return row
+
+    @staticmethod
+    def _work_reg_final_pass_rows(child_rows: list[list[str]]) -> list[list[str]]:
+        if not child_rows:
+            return []
+
+        first_child = RowChangeTracker._copy_row(child_rows[0])
+        base_name_match = _WORK_REG_INDEXED_RE.match(RowChangeTracker._cell(first_child, NAME_COLUMN))
+        if base_name_match is None:
+            return [RowChangeTracker._work_reg_final_child_row(child) for child in child_rows]
+
+        base_name = base_name_match.group(1)
+        parent_row = RowChangeTracker._copy_row(first_child)
+        parent_row[NAME_COLUMN] = base_name
+        parent_row[DATATYPE_COLUMN] = WORK_REG_TARGET_TYPE
+        parent_row[2] = RowChangeTracker._work_reg_parent_description_from_child(first_child[2])
+        if len(parent_row) <= ARRAY_DIMENSION_COLUMN:
+            parent_row.extend([""] * (ARRAY_DIMENSION_COLUMN + 1 - len(parent_row)))
+        parent_row[ARRAY_DIMENSION_COLUMN] = str(WORK_REG_COUNT)
+        if len(parent_row) <= 12:
+            parent_row.extend([""] * (13 - len(parent_row)))
+        parent_row[12] = ", ".join(["0"] * WORK_REG_COUNT)
+        parent_row[IOADDRESS_COLUMN] = ""
+
+        output_rows = [parent_row]
+        for child_row in child_rows:
+            output_rows.append(RowChangeTracker._work_reg_final_child_row(child_row))
+        return output_rows
+
+    @staticmethod
+    def _work_reg_final_child_row(child_row: list[str]) -> list[str]:
+        row = RowChangeTracker._copy_row(child_row)
+        if len(row) <= DATATYPE_COLUMN:
+            row.extend([""] * (DATATYPE_COLUMN + 1 - len(row)))
+        row[DATATYPE_COLUMN] = WORK_REG_TARGET_TYPE
+        if len(row) <= ARRAY_DIMENSION_COLUMN:
+            row.extend([""] * (ARRAY_DIMENSION_COLUMN + 1 - len(row)))
+        row[ARRAY_DIMENSION_COLUMN] = "0"
+        row[IOADDRESS_COLUMN] = ""
+        return row
+
+    @staticmethod
+    def _work_reg_parent_description_from_child(description: str) -> str:
+        stripped = description.strip()
+        indexed_match = re.match(r"^(.*) Register # \d+$", stripped)
+        if indexed_match is not None:
+            return TankRules.build_work_reg_parent_description(indexed_match.group(1).strip())
+
+        for suffix in (" Tank Input", " Tank Total", " Tank Increment", " Tank Output"):
+            if stripped.endswith(suffix):
+                tank_label = stripped[: -len(suffix)].strip()
+                return TankRules.build_work_reg_parent_description(tank_label)
+
+        if stripped.endswith(" Register"):
+            return stripped
+
+        if stripped.endswith(" Tank"):
+            return TankRules.build_work_reg_parent_description(stripped)
+
+        return TankRules.build_work_reg_parent_description(stripped)

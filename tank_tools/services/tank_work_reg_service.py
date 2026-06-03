@@ -8,7 +8,7 @@ from tank_tools.config import ProjectConfig
 from tank_tools.io import CsvRepository
 from tank_tools.models import WorkRegMatch, WorkRegMiss
 from tank_tools.output_format import bullet_prefix, sub_bullet_prefix
-from tank_tools.rules import TankRules
+from tank_tools.rules import WORK_REG_TARGET_TYPE, TankRules
 
 
 class TankWorkRegService:
@@ -103,6 +103,7 @@ class TankWorkRegService:
             tag = self._rules.build_work_reg_tag(prefix, work_index)
             work_description = self._rules.build_work_reg_description(tank_label, work_index)
             row[0] = tag
+            row[1] = WORK_REG_TARGET_TYPE
             row[2] = work_description
             if len(row) > 15:
                 row[15] = ""
@@ -177,9 +178,12 @@ class TankWorkRegService:
                 base_row.extend([""] * (13 - len(base_row)))
 
             base_row[0] = base_name
+            base_row[1] = WORK_REG_TARGET_TYPE
             base_row[2] = self._base_work_reg_description(base_row[2])
             base_row[7] = str(self.WORK_REG_COUNT)
             base_row[12] = ", ".join(["0"] * self.WORK_REG_COUNT)
+            if len(base_row) > 15:
+                base_row[15] = ""
             output_rows.append(base_row)
             existing_names.add(base_name)
 
@@ -210,18 +214,22 @@ class TankWorkRegService:
     @staticmethod
     def _base_work_reg_description(description: str) -> str:
         stripped = description.strip()
+        indexed_match = re.match(r"^(.*) Register # \d+$", stripped)
+        if indexed_match is not None:
+            return TankRules.build_work_reg_parent_description(indexed_match.group(1).strip())
+
         for suffix in (" Tank Input", " Tank Total", " Tank Increment", " Tank Output"):
             if stripped.endswith(suffix):
-                base = stripped[: -len(suffix)].strip() + " Tank"
-                return base if base.endswith(" Register") else base + " Register"
+                tank_label = stripped[: -len(suffix)].strip()
+                return TankRules.build_work_reg_parent_description(tank_label)
 
         if stripped.endswith(" Register"):
             return stripped
 
         if stripped.endswith(" Tank"):
-            return stripped + " Register"
+            return TankRules.build_work_reg_parent_description(stripped)
 
-        return stripped + " Register"
+        return TankRules.build_work_reg_parent_description(stripped)
 
     @staticmethod
     def _build_register_lookup(
