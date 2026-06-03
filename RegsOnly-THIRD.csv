@@ -1,6 +1,3 @@
 Name,DataType,Description,DataTypeID,Retentive,Force2,DisplayFormat,ArrayDimension1,ArrayDimension2,Publish,MarkAsUsed,MaxLength,InitialValue,DataSource,DataSourceClsid,IOAddress,IOAddressOffset,IOAddressAlias,Input_VTL,Output_VTL,extra_properties
 FO_2P_TANK_WORK_REG,INT,Fuel Oil #2-P Register,,YES,,Decimal,4,0,False,NO,16,"0, 0, 0, 0",GE IP Controller,{98D70480-4881-11D4-9F26-0050DA19DE4A},,,,,,
-FO_2P_TANK_WORK_REG[0],INT,Fuel Oil #2-P Register # 0,,YES,,Decimal,0,0,False,NO,16,0,GE IP Controller,{98D70480-4881-11D4-9F26-0050DA19DE4A},,,,,,
-FO_2P_TANK_WORK_REG[1],INT,Fuel Oil #2-P Register # 1,,YES,,Decimal,0,0,False,NO,16,291,GE IP Controller,{98D70480-4881-11D4-9F26-0050DA19DE4A},,,,,,
-FO_2P_TANK_WORK_REG[2],INT,Fuel Oil #2-P Register # 2,,YES,,Decimal,0,0,False,NO,16,583,GE IP Controller,{98D70480-4881-11D4-9F26-0050DA19DE4A},,,,,,
-FO_2P_TANK_WORK_REG[3],INT,Fuel Oil #2-P Register # 3,,YES,,Decimal,0,0,False,NO,16,291,GE IP Controller,{98D70480-4881-11D4-9F26-0050DA19DE4A},,,,,,
+FO_2P_TANK_WORK_REG[0],INT,Fuel Oil #2-P Register # 0,,YES,,Decimal,0,0,False,NO,16,0,GE IP Controller,{98D70480-4881-11D4-9F26-0050DA19DE4A},%R10240,,,,,
