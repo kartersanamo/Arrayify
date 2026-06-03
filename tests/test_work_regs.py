@@ -262,6 +262,32 @@ class RowChangeTrackerTests(unittest.TestCase):
         self.assertEqual(plan.first_pass_rows[1][15], "%R99999")
         self.assertEqual(plan.first_pass_rows, plan.second_pass_rows)
 
+    def test_export_synthesizes_array_parent_row(self) -> None:
+        header = ["Name", "Type", "Description"] + [""] * 13
+        baseline = [
+            header,
+            make_row("R105", "Liquid Mud #4-P Tank Volume", "1.0"),
+            make_row("R106"),
+            make_row("R107"),
+            make_row("R108"),
+        ]
+        current = copy.deepcopy(baseline)
+        for offset in range(4):
+            current[offset + 1][0] = f"R105[{offset}]"
+            current[offset + 1][2] = f"Liquid Mud #4-P Tank Volume @ {offset}"
+            current[offset + 1][12] = str(offset + 1)
+
+        tracker = RowChangeTracker(copy.deepcopy(baseline))
+        plan = tracker.export_plan(current)
+
+        exported = plan.second_pass_rows[1:]
+        exported_by_name = {row[0]: row for row in exported}
+
+        self.assertIn("R105", exported_by_name)
+        self.assertEqual(exported_by_name["R105"][7], "4")
+        self.assertEqual(exported_by_name["R105"][12], "0, 0, 0, 0")
+        self.assertEqual([row[0] for row in exported[:5]], ["R105", "R105[0]", "R105[1]", "R105[2]", "R105[3]"])
+
     def test_work_registers_only_export_excludes_other_changes(self) -> None:
         baseline = build_lm4p_block()
         current = copy.deepcopy(baseline)

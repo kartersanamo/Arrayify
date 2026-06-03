@@ -55,8 +55,9 @@ class RowChangeTracker:
         current_names = {self._cell(row, NAME_COLUMN) for row in current_rows[1:] if row}
         renamed_baseline_by_signature = self._index_renamed_baseline_candidates(current_names)
         used_baseline_names: set[str] = set()
+        synthesized_array_bases: set[str] = set()
 
-        for current_row in current_rows[1:]:
+        for current_index, current_row in enumerate(current_rows[1:], start=1):
             if not current_row:
                 continue
 
@@ -86,8 +87,20 @@ class RowChangeTracker:
             ):
                 continue
 
+            synthetic_parent_row = self._build_synthetic_array_parent_row(
+                current_rows,
+                current_index,
+                current_row,
+                baseline_row,
+                rules,
+            )
+
             if not self._rows_differ(current_row, baseline_row):
                 continue
+
+            if synthetic_parent_row is not None:
+                first_pass_rows.append(self._copy_row(synthetic_parent_row))
+                second_pass_rows.append(self._copy_row(synthetic_parent_row))
 
             second_row = self._copy_row(current_row)
             second_pass_rows.append(second_row)
@@ -228,6 +241,48 @@ class RowChangeTracker:
 
         used_baseline_names.add(source_register)
         return baseline_row
+
+    @staticmethod
+    def _build_array_parent_row(
+        current_rows: list[list[str]],
+        current_index: int,
+        current_row: list[str],
+        baseline_row: list[str] | None,
+        synthesized_array_bases: set[str],
+    ) -> list[str] | None:
+        if baseline_row is None:
+            return None
+
+        current_name = RowChangeTracker._cell(current_row, NAME_COLUMN)
+        register_match = re.match(r"^R(\d+)\[(\d+)\]$", current_name)
+        if register_match is None or register_match.group(2) != "0":
+            return None
+
+        base_register = f"R{register_match.group(1)}"
+        if base_register in synthesized_array_bases:
+            return None
+
+        array_length = RowChangeTracker._count_array_block_length(current_rows, current_index, base_register)
+        if array_length <= 1:
+            return None
+
+        synthesized_array_bases.add(base_register)
+
+        row = RowChangeTracker._copy_row(baseline_row)
+        row[NAME_COLUMN] = base_register
+
+        description_match = re.match(r"^(.*) @ \d+$", RowChangeTracker._cell(current_row, 2))
+        if description_match is not None:
+            row[2] = description_match.group(1).strip()
+        elif len(row) > 2:
+            row[2] = RowChangeTracker._cell(baseline_row, 2)
+
+        if len(row) <= 12:
+            row.extend([""] * (13 - len(row)))
+
+        row[7] = str(array_length)
+        row[12] = ", ".join(["0"] * array_length)
+        return row
 
     @staticmethod
     def _resolve_from_sounding_description(
@@ -377,6 +432,62 @@ class RowChangeTracker:
             indexed[self._cell(row, NAME_COLUMN)] = row
         return indexed
 
+    def _build_synthetic_array_parent_row(
+        self,
+        current_rows: list[list[str]],
+        current_index: int,
+        current_row: list[str],
+        baseline_row: list[str] | None,
+        rules: TankRules,
+    ) -> list[str] | None:
+        name_match = re.match(r"^(.+)\[(\d+)\]$", self._cell(current_row, NAME_COLUMN))
+        if name_match is None or int(name_match.group(2)) != 0:
+            return None
+
+        if len(current_row) <= 2:
+            return None
+
+        description_match = rules.tank_description_re.match(current_row[2])
+        if description_match is None or description_match.group(2) != "0":
+            return None
+
+        base_name = name_match.group(1)
+        base_description = description_match.group(1).strip()
+        group_length = 1
+
+        for next_row in current_rows[current_index + 1 :]:
+            next_name_match = re.match(r"^(.+)\[(\d+)\]$", self._cell(next_row, NAME_COLUMN))
+            if next_name_match is None or next_name_match.group(1) != base_name:
+                break
+
+            next_index = int(next_name_match.group(2))
+            if next_index != group_length:
+                break
+
+            if len(next_row) <= 2:
+                break
+
+            next_description_match = rules.tank_description_re.match(next_row[2])
+            if (
+                next_description_match is None
+                or next_description_match.group(1).strip() != base_description
+                or int(next_description_match.group(2)) != next_index
+            ):
+                break
+
+            group_length += 1
+
+        if group_length < 2:
+            return None
+
+        source_row = baseline_row if baseline_row is not None else current_row
+        parent_row = self._copy_row(source_row)
+        parent_row[NAME_COLUMN] = base_name
+        parent_row[2] = base_description
+        parent_row[7] = str(group_length)
+        parent_row[12] = ", ".join(["0"] * group_length)
+        return parent_row
+
     @staticmethod
     def _row_signature(row: list[str]) -> tuple[str, ...]:
         excluded = {NAME_COLUMN, 2, IOADDRESS_COLUMN}
@@ -386,6 +497,26 @@ class RowChangeTracker:
             for index in range(max_length)
             if index not in excluded
         )
+
+    @staticmethod
+    def _count_array_block_length(current_rows: list[list[str]], start_index: int, base_register: str) -> int:
+        length = 0
+        expected_index = 0
+
+        for row in current_rows[start_index:]:
+            current_name = RowChangeTracker._cell(row, NAME_COLUMN)
+            register_match = re.match(r"^R(\d+)\[(\d+)\]$", current_name)
+            if register_match is None or f"R{register_match.group(1)}" != base_register:
+                break
+
+            current_index = int(register_match.group(2))
+            if current_index != expected_index:
+                break
+
+            length += 1
+            expected_index += 1
+
+        return length
 
     @staticmethod
     def _io_value(row: list[str]) -> str:
