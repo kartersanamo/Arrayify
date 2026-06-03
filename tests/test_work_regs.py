@@ -317,7 +317,7 @@ class RowChangeTrackerTests(unittest.TestCase):
         bindings = scan_work_register_bindings(baseline, TankRules())
         plan = tracker.export_plan(current, work_reg_bindings=bindings, work_registers_only=True)
 
-        final_rows = plan.third_pass_rows if plan.pass_count == 3 else plan.second_pass_rows
+        final_rows = plan._final_pass_rows()
         exported_names = {row[0] for row in final_rows[1:]}
         self.assertIn("LM_4P_WORK_REG", exported_names)
         self.assertIn("LM_4P_WORK_REG[0]", exported_names)
@@ -337,7 +337,7 @@ class RowChangeTrackerTests(unittest.TestCase):
         bindings = scan_work_register_bindings(baseline, TankRules())
         plan = tracker.export_plan(current, work_reg_bindings=bindings, work_registers_only=True)
 
-        final_rows = plan.third_pass_rows if plan.pass_count == 3 else plan.second_pass_rows
+        final_rows = plan._final_pass_rows()
         exported = {row[0]: row for row in final_rows[1:]}
         self.assertIn("LM_4P_WORK_REG", exported)
         self.assertEqual(exported["LM_4P_WORK_REG"][7], "4")
@@ -375,31 +375,34 @@ class RowChangeTrackerTests(unittest.TestCase):
         )
 
         self.assertEqual(plan.pass_count, 3)
-        first_rows = plan.first_pass_rows[1:]
-        self.assertEqual(len(first_rows), 5)
-        self.assertEqual(first_rows[0][0], f"{prefix}_WORK_REG")
+        assert plan.pass_file_labels == ("BYREF-PARENT", "BYREF-MATCH", "BYNAME-FINAL")
 
-        first_by_name = {row[0]: row for row in first_rows}
-        self.assertEqual(first_by_name[f"{prefix}_WORK_REG"][1], "WORD")
-        self.assertEqual(first_by_name[f"{prefix}_WORK_REG"][15], "")
-        self.assertEqual(first_by_name[f"{prefix}_WORK_REG"][7], "4")
-        self.assertEqual(first_by_name[f"{prefix}_WORK_REG[0]"][1], "WORD")
-        self.assertEqual(first_by_name[f"{prefix}_WORK_REG[0]"][15], "%R10240")
+        parent_rows = plan.first_pass_rows[1:]
+        self.assertEqual(len(parent_rows), 1)
+        self.assertEqual(parent_rows[0][0], f"{prefix}_WORK_REG")
+        self.assertEqual(parent_rows[0][1], "WORD")
+        self.assertEqual(parent_rows[0][15], "")
 
-        type_rows = plan.second_pass_rows[1:]
-        self.assertEqual(len(type_rows), 2)
-        type_by_name = {row[0]: row for row in type_rows}
-        self.assertEqual(type_by_name[f"{prefix}_WORK_REG"][1], "INT")
-        self.assertEqual(type_by_name[f"{prefix}_WORK_REG"][15], "")
-        self.assertEqual(type_by_name[f"{prefix}_WORK_REG[0]"][1], "INT")
-        self.assertEqual(type_by_name[f"{prefix}_WORK_REG[0]"][15], "%R10240")
+        child_rows = plan.second_pass_rows[1:]
+        self.assertEqual(len(child_rows), 4)
+        child_by_name = {row[0]: row for row in child_rows}
+        self.assertEqual(child_by_name[f"{prefix}_WORK_REG[0]"][1], "WORD")
+        self.assertEqual(child_by_name[f"{prefix}_WORK_REG[0]"][15], "%R10240")
 
         assert plan.third_pass_rows is not None
         final_by_name = {row[0]: row for row in plan.third_pass_rows[1:]}
         self.assertIn(f"{prefix}_WORK_REG", final_by_name)
+        self.assertEqual(final_by_name[f"{prefix}_WORK_REG"][1], "INT")
         self.assertEqual(final_by_name[f"{prefix}_WORK_REG"][7], "4")
-        self.assertEqual(final_by_name[f"{prefix}_WORK_REG"][15], "")
         self.assertEqual(final_by_name[f"{prefix}_WORK_REG[0]"][15], "")
+
+        paths = ExportPlan.export_paths(
+            Path("/tmp/RegsOnly.csv"),
+            plan.pass_count,
+            plan.pass_file_labels,
+        )
+        self.assertEqual(paths[0].name, "RegsOnly-BYREF-PARENT.csv")
+        self.assertEqual(paths[2].name, "RegsOnly-BYNAME-FINAL.csv")
 
     def test_work_register_two_pass_export_when_index_zero_is_int(self) -> None:
         header = ["Name", "Type", "Description"] + [""] * 13
@@ -430,20 +433,12 @@ class RowChangeTrackerTests(unittest.TestCase):
             work_registers_only=True,
         )
 
-        self.assertEqual(plan.pass_count, 2)
-        self.assertIsNone(plan.third_pass_rows)
-        first_rows = plan.first_pass_rows[1:]
-        self.assertEqual(len(first_rows), 5)
-        self.assertEqual(first_rows[0][0], "ME_1S_WORK_REG")
-        first_by_name = {row[0]: row for row in first_rows}
-        self.assertEqual(first_by_name["ME_1S_WORK_REG"][1], "INT")
-        self.assertEqual(first_by_name["ME_1S_WORK_REG"][15], "")
-        self.assertEqual(len(plan.second_pass_rows[1:]), 5)
-
-    def test_three_pass_export_paths(self) -> None:
-        paths = ExportPlan.export_paths(Path("/tmp/export.csv"), pass_count=3)
-        self.assertEqual(len(paths), 3)
-        self.assertEqual(paths[2].name, "export-THIRD.csv")
+        self.assertEqual(plan.pass_count, 3)
+        self.assertEqual(len(plan.first_pass_rows[1:]), 1)
+        self.assertEqual(plan.first_pass_rows[1][0], "ME_1S_WORK_REG")
+        self.assertEqual(len(plan.second_pass_rows[1:]), 4)
+        assert plan.third_pass_rows is not None
+        self.assertEqual(len(plan.third_pass_rows[1:]), 5)
 
 
 class NormalizeWorkRegSkipTests(unittest.TestCase):

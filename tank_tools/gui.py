@@ -751,27 +751,25 @@ class TankManagerApp:
         rows_label = f"{row_label}s" if export_plan.modified_row_count != 1 else row_label
 
         if export_plan.needs_dual_export:
-            export_paths = ExportPlan.export_paths(selected_path, export_plan.pass_count)
-            self._write_export_rows(export_paths[0], export_plan.first_pass_rows)
-            if export_plan.pass_count >= 3 and export_plan.third_pass_rows is not None:
-                self._write_export_rows(export_paths[1], export_plan.second_pass_rows)
-                self._write_export_rows(export_paths[2], export_plan.third_pass_rows)
-                file_names = ", ".join(path.name for path in export_paths)
-                self.status_var.set(
-                    f"Exported {export_plan.modified_row_count} {rows_label} to {file_names}."
-                )
+            export_paths = ExportPlan.export_paths(
+                selected_path,
+                export_plan.pass_count,
+                export_plan.file_labels_for_export(),
+            )
+            for pass_index, export_path in enumerate(export_paths):
+                self._write_export_rows(export_path, export_plan.pass_rows(pass_index))
+            file_names = ", ".join(path.name for path in export_paths)
+            self.status_var.set(
+                f"Exported {export_plan.modified_row_count} {rows_label} to {file_names}."
+            )
+            if work_registers_only and export_plan.pass_match_hints is not None:
                 self._append_log(
-                    self._work_reg_export_log_message(work_registers_only, export_paths),
+                    self._work_reg_export_log_message(export_paths, export_plan.pass_match_hints),
                     level="success",
                 )
             else:
-                self._write_export_rows(export_paths[1], export_plan.second_pass_rows)
-                file_names = f"{export_paths[0].name} and {export_paths[1].name}"
-                self.status_var.set(
-                    f"Exported {export_plan.modified_row_count} {rows_label} to {file_names}."
-                )
                 self._append_log(
-                    self._work_reg_export_log_message(work_registers_only, export_paths),
+                    self._generic_export_log_message(export_paths),
                     level="success",
                 )
         else:
@@ -782,25 +780,24 @@ class TankManagerApp:
 
     @staticmethod
     def _work_reg_export_log_message(
-        work_registers_only: bool,
         export_paths: tuple[Path, ...],
+        match_hints: tuple[str, ...],
     ) -> str:
-        prefix = "Tank register " if work_registers_only else ""
-        if len(export_paths) >= 3:
-            first_path, second_path, third_path = export_paths
-            return (
-                f"{prefix}Three-pass export complete (import in order, match by Ref Address And Data Type):\n"
-                f"- {first_path.name}: create array parent (blank ref), then match children by ref+type\n"
-                f"- {second_path.name}: convert parent and index 0 WORD to INT (child keeps baseline ref)\n"
-                f"- {third_path.name}: create array parent, uniform INT children, blank child refs\n"
-            )
+        lines = ["Tank register export complete. Import each file in order:\n"]
+        for export_path, hint in zip(export_paths, match_hints):
+            lines.append(f"- {export_path.name}: {hint}")
+        return "\n".join(lines) + "\n"
 
-        first_path, second_path = export_paths
-        return (
-            f"{prefix}Two-pass export complete (import in order, match by Ref Address And Data Type):\n"
-            f"- {first_path.name}: create array parent (blank ref), then match children by ref+type\n"
-            f"- {second_path.name}: final array layout with INT types and blank child refs\n"
-        )
+    @staticmethod
+    def _generic_export_log_message(export_paths: tuple[Path, ...]) -> str:
+        if len(export_paths) >= 2:
+            first_path, second_path = export_paths[0], export_paths[1]
+            return (
+                "Dual export complete:\n"
+                f"- {first_path.name}: import with Match by Ref Address And Data Type\n"
+                f"- {second_path.name}: final live preview values\n"
+            )
+        return f"Exported to {export_paths[0].name}\n"
 
     @staticmethod
     def _write_export_rows(export_path: Path, rows: list[list[str]]) -> None:

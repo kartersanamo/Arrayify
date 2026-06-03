@@ -16,12 +16,24 @@ _WORK_REG_INDEXED_RE = re.compile(r"^(.+_WORK_REG)\[(\d+)\]$")
 _WORK_REG_BASE_RE = re.compile(r"^.+_WORK_REG$")
 
 
+_PASS_SUFFIXES = ("FIRST", "SECOND", "THIRD", "FOURTH")
+WORK_REG_PASS_LABELS = ("BYREF-PARENT", "BYREF-MATCH", "BYNAME-FINAL")
+WORK_REG_PASS_MATCH_MODES = (
+    "Add new variable (parent has no IO address — do not enable match)",
+    "Match by Ref Address And Data Type",
+    "Match by Variable Name",
+)
+
+
 @dataclass(frozen=True)
 class ExportPlan:
     first_pass_rows: list[list[str]]
     second_pass_rows: list[list[str]]
     third_pass_rows: list[list[str]] | None = None
+    fourth_pass_rows: list[list[str]] | None = None
     pass_count: int = 1
+    pass_file_labels: tuple[str, ...] | None = None
+    pass_match_hints: tuple[str, ...] | None = None
 
     @property
     def needs_dual_export(self) -> bool:
@@ -31,19 +43,41 @@ class ExportPlan:
     def modified_row_count(self) -> int:
         return max(0, len(self._final_pass_rows()) - 1)
 
+    def pass_rows(self, pass_index: int) -> list[list[str]]:
+        rows_by_pass = (
+            self.first_pass_rows,
+            self.second_pass_rows,
+            self.third_pass_rows,
+            self.fourth_pass_rows,
+        )
+        selected = rows_by_pass[pass_index]
+        if selected is None:
+            raise IndexError(f"No export pass at index {pass_index}")
+        return selected
+
     def _final_pass_rows(self) -> list[list[str]]:
+        if self.pass_count >= 4 and self.fourth_pass_rows is not None:
+            return self.fourth_pass_rows
         if self.pass_count >= 3 and self.third_pass_rows is not None:
             return self.third_pass_rows
         return self.second_pass_rows
 
+    def file_labels_for_export(self) -> tuple[str, ...]:
+        if self.pass_file_labels is not None:
+            return self.pass_file_labels
+        return _PASS_SUFFIXES[: self.pass_count]
+
     @staticmethod
-    def export_paths(selected_path: Path, pass_count: int = 2) -> tuple[Path, ...]:
-        first_path = selected_path.with_name(f"{selected_path.stem}-FIRST{selected_path.suffix}")
-        second_path = selected_path.with_name(f"{selected_path.stem}-SECOND{selected_path.suffix}")
-        if pass_count >= 3:
-            third_path = selected_path.with_name(f"{selected_path.stem}-THIRD{selected_path.suffix}")
-            return (first_path, second_path, third_path)
-        return (first_path, second_path)
+    def export_paths(
+        selected_path: Path,
+        pass_count: int = 2,
+        file_labels: tuple[str, ...] | None = None,
+    ) -> tuple[Path, ...]:
+        labels = file_labels or _PASS_SUFFIXES[:pass_count]
+        return tuple(
+            selected_path.with_name(f"{selected_path.stem}-{label}{selected_path.suffix}")
+            for label in labels
+        )
 
 
 @dataclass
@@ -149,10 +183,9 @@ class RowChangeTracker:
     ) -> ExportPlan:
         header = current_rows[0]
         baseline_by_name = self._index_baseline_rows()
-        match_rows: list[list[str]] = []
-        type_rows: list[list[str]] = []
+        parent_rows: list[list[str]] = []
+        children_match_rows: list[list[str]] = []
         final_rows: list[list[str]] = []
-        needs_type_pass = False
 
         for _base_name, child_rows in self._iter_work_reg_blocks(current_rows):
             used_baseline_names: set[str] = set()
@@ -177,51 +210,36 @@ class RowChangeTracker:
             if has_ref_match:
                 index_zero_baseline = baselines[0]
                 if index_zero_baseline is not None:
-                    match_rows.append(
+                    parent_rows.append(
                         self._work_reg_match_pass_parent_row(child_rows, index_zero_baseline)
                     )
 
                 for child_row, baseline in zip(child_rows, baselines):
                     if baseline is None:
                         continue
-                    match_rows.append(self._work_reg_match_pass_row(child_row, baseline))
-
-                if (
-                    index_zero_baseline is not None
-                    and self._cell(index_zero_baseline, DATATYPE_COLUMN).upper() == "WORD"
-                ):
-                    needs_type_pass = True
-                    type_rows.append(
-                        self._work_reg_type_pass_parent_row(child_rows, index_zero_baseline)
-                    )
-                    type_rows.append(
-                        self._work_reg_type_pass_row(child_rows[0], index_zero_baseline)
-                    )
+                    children_match_rows.append(self._work_reg_match_pass_row(child_row, baseline))
 
             final_rows.extend(self._work_reg_final_pass_rows(child_rows))
 
         if not final_rows:
             return ExportPlan(first_pass_rows=[], second_pass_rows=[], pass_count=1)
 
-        if not match_rows:
+        if not parent_rows and not children_match_rows:
             return ExportPlan(
                 first_pass_rows=[header, *final_rows],
                 second_pass_rows=[header, *final_rows],
                 pass_count=1,
-            )
-
-        if needs_type_pass:
-            return ExportPlan(
-                first_pass_rows=[header, *match_rows],
-                second_pass_rows=[header, *type_rows],
-                third_pass_rows=[header, *final_rows],
-                pass_count=3,
+                pass_file_labels=("BYNAME-FINAL",),
+                pass_match_hints=("Match by Variable Name",),
             )
 
         return ExportPlan(
-            first_pass_rows=[header, *match_rows],
-            second_pass_rows=[header, *final_rows],
-            pass_count=2,
+            first_pass_rows=[header, *parent_rows],
+            second_pass_rows=[header, *children_match_rows],
+            third_pass_rows=[header, *final_rows],
+            pass_count=3,
+            pass_file_labels=WORK_REG_PASS_LABELS,
+            pass_match_hints=WORK_REG_PASS_MATCH_MODES,
         )
 
     def rows_for_export(
@@ -761,15 +779,6 @@ class RowChangeTracker:
         return parent_row
 
     @staticmethod
-    def _work_reg_type_pass_parent_row(
-        child_rows: list[list[str]],
-        index_zero_baseline: list[str],
-    ) -> list[str]:
-        row = RowChangeTracker._work_reg_match_pass_parent_row(child_rows, index_zero_baseline)
-        row[DATATYPE_COLUMN] = WORK_REG_TARGET_TYPE
-        return row
-
-    @staticmethod
     def _work_reg_match_pass_row(current_row: list[str], baseline_row: list[str]) -> list[str]:
         row = RowChangeTracker._copy_row(current_row)
         if len(row) <= DATATYPE_COLUMN:
@@ -779,12 +788,6 @@ class RowChangeTracker:
         if len(row) <= ARRAY_DIMENSION_COLUMN:
             row.extend([""] * (ARRAY_DIMENSION_COLUMN + 1 - len(row)))
         row[ARRAY_DIMENSION_COLUMN] = "0"
-        return row
-
-    @staticmethod
-    def _work_reg_type_pass_row(current_row: list[str], baseline_row: list[str]) -> list[str]:
-        row = RowChangeTracker._work_reg_match_pass_row(current_row, baseline_row)
-        row[DATATYPE_COLUMN] = WORK_REG_TARGET_TYPE
         return row
 
     @staticmethod
