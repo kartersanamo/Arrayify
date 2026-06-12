@@ -22,23 +22,22 @@
 
 from __future__ import annotations
 
-import argparse
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from tank_tools.cli import TankCli
+from tank_tools.cli import TankCli, build_parser
 from tank_tools.runtime import is_frozen
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Arrayify, sound, and normalize tank register spreadsheets.")
-    parser.add_argument("--gui", action="store_true", help="Launch the Tkinter GUI instead of the CLI menu.")
+    parser = build_parser()
+    parser.add_argument("--gui", action="store_true", help="Launch the Tkinter GUI.")
     parser.add_argument(
         "--cli",
         action="store_true",
-        help="Force the CLI menu (development only; packaged GUI builds launch the GUI by default).",
+        help="Force the CLI (required for terminal use in packaged builds).",
     )
     args = parser.parse_args()
 
@@ -46,7 +45,8 @@ def main() -> None:
         launch_gui()
         return
 
-    TankCli().run()
+    exit_code = TankCli().run(args)
+    raise SystemExit(exit_code)
 
 
 def should_launch_gui(explicit_gui: bool, explicit_cli: bool) -> bool:
@@ -76,14 +76,15 @@ def launch_gui() -> None:
             os.execv(gui_executable, [gui_executable, str(Path(__file__).resolve()), *sys.argv[1:]])
 
     try:
-        import tkinter as tk
+        import tkinter as tk  # noqa: F401
     except ImportError:
         print("GUI mode is unavailable because Tkinter is not installed in this build.")
         return
 
     from tank_tools.gui import TankManagerApp
+    from tkinter import Tk
 
-    root = tk.Tk()
+    root = Tk()
     TankManagerApp(root).run()
 
 

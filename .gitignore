@@ -1,7 +1,19 @@
-Files/*
-main.py
-Arrayify.app/*
-*.spec
-build/*
-dist/*
+# Build artifacts
+build/
+dist/
+
+# Python
+__pycache__/
 *.pyc
+
+# macOS
+.DS_Store
+
+# Local venv
+venv/
+
+# Customer CSVs stay local; sample data is tracked via negation
+Files/*
+!Files/h221Test.csv
+!Files/NewSounds/
+!Files/NewSounds/**

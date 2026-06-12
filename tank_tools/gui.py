@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import copy
 import queue
 import sys
@@ -22,7 +21,6 @@ try:
         VERTICAL,
         X,
         Y,
-        BooleanVar,
         filedialog,
         messagebox,
         simpledialog,
@@ -35,21 +33,16 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime in environm
     tk = None
     END = HORIZONTAL = LEFT = RIGHT = BOTH = VERTICAL = X = Y = None
     filedialog = messagebox = simpledialog = None
-    BooleanVar = StringVar = Text = Tk = object
+    StringVar = Text = Tk = object
     ttk = None
 
 from tank_tools.app_identity import APP_TITLE, apply_tk_window_identity, configure_app_identity
 from tank_tools.change_tracker import ExportPlan, RowChangeTracker
 from tank_tools.config import ProjectConfig
-from tank_tools.work_reg_registry import scan_work_register_bindings
 from tank_tools.io import CsvRepository
+from tank_tools.pipeline import TankPipeline
 from tank_tools.rules import TankRules
-from tank_tools.services import (
-    ArrayifyService,
-    TagNormalizationService,
-    TankSoundingService,
-    TankWorkRegService,
-)
+from tank_tools.work_reg_registry import scan_work_register_bindings
 
 from tank_tools.runtime import resource_path
 
@@ -101,10 +94,7 @@ class TankManagerApp:
         self._config = ProjectConfig.default()
         self._csv_repository = CsvRepository()
         self._rules = TankRules()
-        self._arrayify_service = ArrayifyService(self._config, self._csv_repository, self._rules)
-        self._sounding_service = TankSoundingService(self._config, self._csv_repository, self._rules)
-        self._normalization_service = TagNormalizationService(self._config, self._csv_repository, self._rules)
-        self._work_reg_service = TankWorkRegService(self._config, self._csv_repository, self._rules)
+        self._pipeline = TankPipeline(self._config, self._csv_repository, self._rules)
 
         self._paths = GuiPaths()
         self._event_queue: queue.Queue[dict[str, object]] = queue.Queue()
@@ -380,50 +370,27 @@ class TankManagerApp:
                 sound_folder = self._paths.docx_folder
                 tag_prefix_path = self._paths.input_file
 
-                if workflow == "arrayify":
-                    rows = self._arrayify_service.arrayify_points(
-                        input_rows=preview_rows,
-                        write_output=False,
-                        event_callback=self._enqueue_event,
-                    )
-                elif workflow == "sound":
-                    rows = self._sounding_service.sound_tanks(
+                workflow_map = {
+                    "arrayify": "arrayify",
+                    "sound": "sound",
+                    "tank_registers": "tank_registers",
+                    "normalize": "normalize",
+                    "all": "all",
+                }
+                if workflow not in workflow_map:
+                    rows = None
+                else:
+                    rows = self._pipeline.run(
+                        workflow_map[workflow],
+                        preview_rows,
+                        work_reg_bindings=self._work_reg_bindings,
                         sound_folder=sound_folder,
-                        input_rows=preview_rows,
+                        tag_prefix_path=tag_prefix_path,
                         write_output=False,
                         cli_style=False,
                         event_callback=self._enqueue_event,
+                        custom_tag_provider=self._prompt_for_custom_tag,
                     )
-                elif workflow == "tank_registers":
-                    rows = self._run_tank_registers_workflow(preview_rows, tag_prefix_path)
-                elif workflow == "normalize":
-                    rows = self._run_normalize_workflow(preview_rows, tag_prefix_path)
-                elif workflow == "all":
-                    arrayified = self._arrayify_service.arrayify_points(
-                        input_rows=preview_rows,
-                        write_output=False,
-                        event_callback=self._enqueue_event,
-                    )
-                    if arrayified is None:
-                        rows = None
-                    else:
-                        sounded = self._sounding_service.sound_tanks(
-                            sound_folder=sound_folder,
-                            input_rows=arrayified,
-                            write_output=False,
-                            cli_style=False,
-                            event_callback=self._enqueue_event,
-                        )
-                        if sounded is None:
-                            rows = None
-                        else:
-                            labeled = self._run_tank_registers_workflow(sounded, tag_prefix_path)
-                            if labeled is None:
-                                rows = None
-                            else:
-                                rows = self._run_normalize_workflow(labeled, tag_prefix_path)
-                else:
-                    rows = None
 
                 if rows is not None:
                     self._event_queue.put({"type": "rows", "rows": rows})
@@ -435,36 +402,6 @@ class TankManagerApp:
 
     def _enqueue_event(self, event: dict[str, object]) -> None:
         self._event_queue.put(event)
-
-    def _run_tank_registers_workflow(
-        self,
-        rows: list[list[str]],
-        tag_prefix_path: Path | None,
-    ) -> list[list[str]] | None:
-        return self._work_reg_service.label_work_registers(
-            self._work_reg_bindings,
-            input_rows=rows,
-            tag_prefix_input_path=tag_prefix_path,
-            write_output=False,
-            cli_style=False,
-            event_callback=self._enqueue_event,
-            custom_tag_provider=self._prompt_for_custom_tag,
-        )
-
-    def _run_normalize_workflow(
-        self,
-        rows: list[list[str]],
-        tag_prefix_path: Path | None,
-    ) -> list[list[str]] | None:
-        return self._normalization_service.normalize_tags(
-            input_rows=rows,
-            tag_prefix_input_path=tag_prefix_path,
-            write_output=False,
-            cli_style=False,
-            live_preview=False,
-            event_callback=self._enqueue_event,
-            custom_tag_provider=self._prompt_for_custom_tag,
-        )
 
     def _prompt_for_custom_tag(self, description: str) -> str | None:
         if description in self._custom_tag_responses:
@@ -700,7 +637,6 @@ class TankManagerApp:
         self.status_var.set("Preparing tank register export..." if work_registers_only else "Preparing export...")
 
         export_rows = copy.deepcopy(self._latest_rows)
-        change_tracker = self._change_tracker
         work_reg_bindings = copy.deepcopy(self._work_reg_bindings)
         prefix_map: dict[str, str] = {}
         if self._paths.input_file is not None and self._paths.input_file.is_file():
@@ -708,8 +644,9 @@ class TankManagerApp:
 
         def prepare_export() -> None:
             try:
-                export_plan = change_tracker.export_plan(
+                export_plan = self._pipeline.build_export_plan(
                     export_rows,
+                    self._baseline_rows,
                     work_reg_bindings=work_reg_bindings,
                     prefix_map=prefix_map,
                     work_registers_only=work_registers_only,
@@ -750,72 +687,26 @@ class TankManagerApp:
         row_label = "tank register row" if work_registers_only else "modified row"
         rows_label = f"{row_label}s" if export_plan.modified_row_count != 1 else row_label
 
-        use_labeled_export_files = (
-            export_plan.needs_dual_export or export_plan.pass_file_labels is not None
-        )
-        if use_labeled_export_files:
-            export_paths = ExportPlan.export_paths(
+        try:
+            export_paths = self._pipeline.write_export_plan(
+                export_plan,
                 selected_path,
-                export_plan.pass_count,
-                export_plan.file_labels_for_export(),
+                self._csv_repository,
+                work_registers_only=work_registers_only,
             )
-            for pass_index, export_path in enumerate(export_paths):
-                self._write_export_rows(export_path, export_plan.pass_rows(pass_index))
-            file_names = ", ".join(path.name for path in export_paths)
-            self.status_var.set(
-                f"Exported {export_plan.modified_row_count} {rows_label} to {file_names}."
-            )
-            if export_plan.pass_match_hints is not None:
-                log_message = self._labeled_export_log_message(
-                    export_paths,
-                    export_plan.pass_match_hints,
-                    work_registers_only=work_registers_only,
-                )
-                self._append_log(log_message, level="success")
-                messagebox.showinfo(
-                    "Export complete",
-                    log_message.strip(),
-                )
-            else:
-                self._append_log(
-                    self._generic_export_log_message(export_paths),
-                    level="success",
-                )
-        else:
-            self._write_export_rows(selected_path, export_plan.second_pass_rows)
-            self.status_var.set(
-                f"Exported {export_plan.modified_row_count} {rows_label} to {selected_path.name}"
-            )
+        except ValueError as exc:
+            messagebox.showinfo("Nothing to export", str(exc))
+            return
 
-    @staticmethod
-    def _labeled_export_log_message(
-        export_paths: tuple[Path, ...],
-        match_hints: tuple[str, ...],
-        work_registers_only: bool = False,
-    ) -> str:
-        title = (
-            "Tank register export complete."
-            if work_registers_only
-            else "Export complete."
+        file_names = ", ".join(path.name for path in export_paths)
+        self.status_var.set(
+            f"Exported {export_plan.modified_row_count} {rows_label} to {file_names}."
         )
-        lines = [f"{title} Import each file in order:\n"]
-        for export_path, hint in zip(export_paths, match_hints):
-            lines.append(f"- {export_path.name}: {hint}")
-        return "\n".join(lines) + "\n"
-
-    @staticmethod
-    def _generic_export_log_message(export_paths: tuple[Path, ...]) -> str:
-        if len(export_paths) >= 2:
-            first_path, second_path = export_paths[0], export_paths[1]
-            return (
-                "Dual export complete:\n"
-                f"- {first_path.name}: import with Match by Ref Address And Data Type\n"
-                f"- {second_path.name}: final live preview values\n"
-            )
-        return f"Exported to {export_paths[0].name}\n"
-
-    @staticmethod
-    def _write_export_rows(export_path: Path, rows: list[list[str]]) -> None:
-        with export_path.open("w", newline="") as output_file:
-            writer = csv.writer(output_file, dialect="excel")
-            writer.writerows(rows)
+        log_message = self._pipeline.format_export_log_message(
+            export_paths,
+            export_plan,
+            work_registers_only=work_registers_only,
+        )
+        self._append_log(log_message, level="success")
+        if export_plan.pass_match_hints is not None:
+            messagebox.showinfo("Export complete", log_message.strip())
